@@ -1,0 +1,454 @@
+use clap::{Parser, Subcommand};
+
+pub mod error;
+pub mod output;
+pub mod handler;
+pub mod daemon;
+
+/// Great Grimoire Grabber - A classic-style download manager
+#[derive(Parser, Debug)]
+#[command(name = "ggg")]
+#[command(version, about, long_about = None)]
+pub struct Cli {
+    /// Override config directory path
+    #[arg(long, global = true, value_name = "PATH")]
+    pub config: Option<std::path::PathBuf>,
+
+    /// Run in headless mode (no GUI)
+    #[arg(long, global = true)]
+    pub headless: bool,
+
+    /// Enable verbose logging (TRACE level)
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
+
+    /// Subcommand to execute
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+}
+
+/// CLI commands
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Add a new download
+    Add {
+        /// URL to download
+        url: String,
+
+        /// Folder ID to assign (default, images, videos, audio, archives)
+        #[arg(long)]
+        folder: Option<String>,
+    },
+
+    /// List all downloads
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Start a download
+    Start {
+        /// Download ID (UUID)
+        id: String,
+
+        /// Wait for download to complete and show progress
+        #[arg(long)]
+        wait: bool,
+    },
+
+    /// Pause a download
+    Pause {
+        /// Download ID (UUID)
+        id: String,
+    },
+
+    /// Remove a download
+    Remove {
+        /// Download ID (UUID)
+        id: String,
+    },
+
+    /// Show download status
+    Status {
+        /// Download ID (UUID)
+        id: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Manage configuration
+    Config {
+        /// Configuration action
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+
+    /// Display application logs
+    Logs {
+        /// Follow log output (tail -f mode)
+        #[arg(long, short)]
+        follow: bool,
+
+        /// Filter by log level (error, warn, info, debug, trace)
+        #[arg(long)]
+        level: Option<String>,
+
+        /// Number of lines to show (default: 50)
+        #[arg(long, short = 'n')]
+        lines: Option<usize>,
+    },
+
+    /// Show download completion history
+    History {
+        /// Show only today's completions
+        #[arg(long)]
+        today: bool,
+
+        /// Filter by folder ID
+        #[arg(long)]
+        folder: Option<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show download statistics
+    Stats {
+        /// Filter by folder ID
+        #[arg(long)]
+        folder: Option<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Debug and diagnostic commands
+    Debug {
+        /// Debug action
+        #[command(subcommand)]
+        action: DebugAction,
+    },
+
+    /// Manage scripts
+    Script {
+        /// Script action
+        #[command(subcommand)]
+        action: ScriptAction,
+    },
+
+    /// Manage folders
+    Folder {
+        /// Folder action
+        #[command(subcommand)]
+        action: FolderAction,
+    },
+
+    /// Start all downloads
+    StartAll {
+        /// Filter by folder ID
+        #[arg(long)]
+        folder: Option<String>,
+    },
+
+    /// Pause all downloads
+    PauseAll {
+        /// Filter by folder ID
+        #[arg(long)]
+        folder: Option<String>,
+    },
+
+    /// Clear downloads by status
+    Clear {
+        /// Comma-separated status list (completed,error,paused)
+        #[arg(long)]
+        status: String,
+
+        /// Filter by folder ID
+        #[arg(long)]
+        folder: Option<String>,
+    },
+
+    /// Batch add downloads from file
+    BatchAdd {
+        /// File containing URLs (one per line)
+        file: String,
+
+        /// Folder ID to assign
+        #[arg(long)]
+        folder: Option<String>,
+    },
+
+    /// Set download priority
+    Priority {
+        /// Download ID (UUID)
+        id: String,
+
+        /// Priority value (0-255, higher = more priority)
+        #[arg(long)]
+        set: u8,
+    },
+
+    /// Move download in queue or to another folder
+    Move {
+        /// Download ID (UUID)
+        id: String,
+
+        /// Move to top of queue
+        #[arg(long)]
+        to_top: bool,
+
+        /// Move to bottom of queue
+        #[arg(long)]
+        to_bottom: bool,
+
+        /// Move before another download
+        #[arg(long)]
+        before: Option<String>,
+
+        /// Move to different folder
+        #[arg(long)]
+        folder: Option<String>,
+    },
+
+    /// Export data
+    Export {
+        /// Export action
+        #[command(subcommand)]
+        action: ExportAction,
+    },
+
+    /// Import data
+    Import {
+        /// Import action
+        #[command(subcommand)]
+        action: ImportAction,
+    },
+
+    /// Test utilities
+    Test {
+        /// Test action
+        #[command(subcommand)]
+        action: TestAction,
+    },
+}
+
+/// Configuration actions
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    /// Get a configuration value
+    Get {
+        /// Configuration key (e.g., download.max_concurrent)
+        key: String,
+    },
+
+    /// Set a configuration value
+    Set {
+        /// Configuration key (e.g., download.max_concurrent)
+        key: String,
+
+        /// Configuration value
+        value: String,
+    },
+
+    /// Show all configuration
+    Show {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Debug and diagnostic actions
+#[derive(Subcommand, Debug)]
+pub enum DebugAction {
+    /// Show download manager internal state
+    ManagerState {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show active folder and slot states
+    FolderSlots {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show detailed task information
+    Task {
+        /// Download ID (UUID)
+        id: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Validate configuration
+    ValidateConfig,
+
+    /// Check queue integrity
+    CheckQueue {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Script management actions
+#[derive(Subcommand, Debug)]
+pub enum ScriptAction {
+    /// List all scripts
+    List {
+        /// Show only enabled scripts
+        #[arg(long)]
+        enabled_only: bool,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Enable a script
+    Enable {
+        /// Script filename (e.g., twitter_referer.js)
+        name: String,
+    },
+
+    /// Disable a script
+    Disable {
+        /// Script filename (e.g., twitter_referer.js)
+        name: String,
+    },
+
+    /// Test a script (dry run)
+    Test {
+        /// Script filename to test
+        name: String,
+
+        /// Event to trigger (beforeRequest, headersReceived, completed, error, progress)
+        #[arg(long)]
+        event: String,
+
+        /// URL for test context
+        #[arg(long)]
+        url: String,
+    },
+
+    /// Reload all scripts (for daemon mode)
+    Reload,
+}
+
+/// Folder management actions
+#[derive(Subcommand, Debug)]
+pub enum FolderAction {
+    /// List all folders
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Create a new folder
+    Create {
+        /// Folder ID
+        id: String,
+
+        /// Save path for downloads
+        #[arg(long)]
+        path: String,
+
+        /// Auto-start downloads
+        #[arg(long)]
+        auto_start: bool,
+    },
+
+    /// Show folder settings
+    Show {
+        /// Folder ID
+        id: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Update folder configuration
+    Config {
+        /// Folder ID
+        id: String,
+
+        /// Configuration key=value (e.g., max_concurrent=5)
+        #[arg(long)]
+        set: String,
+    },
+
+    /// Delete a folder
+    Delete {
+        /// Folder ID
+        id: String,
+    },
+}
+
+/// Export actions
+#[derive(Subcommand, Debug)]
+pub enum ExportAction {
+    /// Export queue to file
+    Queue {
+        /// Output file path
+        #[arg(long)]
+        output: String,
+    },
+
+    /// Export configuration to file
+    Config {
+        /// Output file path
+        #[arg(long)]
+        output: String,
+    },
+}
+
+/// Import actions
+#[derive(Subcommand, Debug)]
+pub enum ImportAction {
+    /// Import queue from file
+    Queue {
+        /// Input file path
+        #[arg(long)]
+        input: String,
+    },
+
+    /// Import configuration from file
+    Config {
+        /// Input file path
+        #[arg(long)]
+        input: String,
+    },
+}
+
+/// Test utility actions
+#[derive(Subcommand, Debug)]
+pub enum TestAction {
+    /// Generate test download tasks
+    GenerateTasks {
+        /// Number of tasks to generate
+        #[arg(long)]
+        count: usize,
+
+        /// Folder ID for generated tasks
+        #[arg(long)]
+        folder: Option<String>,
+    },
+
+    /// Reset queue (delete all downloads)
+    ResetQueue,
+
+    /// Reset configuration to defaults
+    ResetConfig,
+}

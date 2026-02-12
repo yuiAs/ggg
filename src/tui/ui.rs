@@ -1,0 +1,2316 @@
+use super::app::TuiApp;
+use super::state::{DetailsPosition, FocusPane, FolderTreeItem, UiMode};
+use crate::download::task::{DownloadStatus, LogLevel};
+use crate::download::http_errors::HttpErrorInfo;
+use fluent::fluent_args;
+use ratatui::{
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, Tabs, Wrap},
+    Frame,
+};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Main rendering function
+pub fn render(app: &TuiApp, f: &mut Frame) {
+    let size = f.area();
+
+    // Create main layout based on UI mode
+    let is_main_screen = matches!(
+        app.state.ui_mode,
+        UiMode::Normal | UiMode::AddDownload | UiMode::DownloadPreview |
+        UiMode::Search | UiMode::ChangeFolder | UiMode::SwitchFolder |
+        UiMode::ConfirmDelete | UiMode::ContextMenu | UiMode::Help
+    ) || (matches!(app.state.ui_mode, UiMode::EditingField) && !app.state.is_editing_app_setting);
+
+    // Main layout: content area + status bar
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),    // Content area
+            Constraint::Length(1), // Status bar
+        ])
+        .split(size);
+
+    // Render main area (overlays handled separately)
+    match app.state.ui_mode {
+        UiMode::Settings | UiMode::FolderEdit => render_settings(app, f, main_chunks[0]),
+        UiMode::EditingField if app.state.is_editing_app_setting => render_settings(app, f, main_chunks[0]),
+        _ if is_main_screen => render_three_pane_layout(app, f, main_chunks[0]),
+        _ => render_three_pane_layout(app, f, main_chunks[0]),
+    }
+
+    // Render status bar
+    render_status_bar(app, f, main_chunks[1]);
+
+    // Render input dialogs (overlays)
+    match app.state.ui_mode {
+        UiMode::Help => render_help(app, f, size),
+        UiMode::AddDownload => render_add_download_dialog(app, f, size),
+        UiMode::EditingField => render_input_dialog(app, f, size),
+        UiMode::DownloadPreview => render_download_preview_dialog(app, f, size),
+        UiMode::Search => {}, // Search is inline in status bar
+        UiMode::ChangeFolder => render_change_folder_dialog(app, f, size),
+        UiMode::SwitchFolder => render_switch_folder_dialog(app, f, size),
+        UiMode::ConfirmDelete => render_confirm_delete_dialog(app, f, size),
+        UiMode::ContextMenu => render_context_menu(app, f, size),
+        UiMode::FolderContextMenu => render_folder_context_menu(app, f, size),
+        _ => {}
+    }
+}
+
+/// Render the 3-pane layout (folder tree | download list / details)
+fn render_three_pane_layout(app: &TuiApp, f: &mut Frame, area: Rect) {
+    // Horizontal split: folder tree (left) | right side
+    let horizontal_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(22), // Folder tree (fixed width)
+            Constraint::Min(0),     // Right side (download list + details)
+        ])
+        .split(area);
+
+    // Store folder tree region
+    {
+        let mut regions = app.state.click_regions.borrow_mut();
+        regions.folder_tree = Some(horizontal_chunks[0]);
+    }
+
+    // Render folder tree
+    render_folder_tree(app, f, horizontal_chunks[0]);
+
+    // Right side layout depends on details_position
+    match app.state.details_position {
+        DetailsPosition::Bottom => {
+            // Vertical split: download list (top) | details (bottom)
+            let right_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(60), // Download list
+                    Constraint::Percentage(40), // Details panel
+                ])
+                .split(horizontal_chunks[1]);
+
+            // Store pane regions
+            {
+                let mut regions = app.state.click_regions.borrow_mut();
+                regions.download_list = Some(right_chunks[0]);
+                regions.details_panel = Some(right_chunks[1]);
+            }
+
+            render_download_list(app, f, right_chunks[0]);
+            render_details_panel(app, f, right_chunks[1]);
+        }
+        DetailsPosition::Right => {
+            // Horizontal split: download list (left) | details (right)
+            let right_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(70), // Download list
+                    Constraint::Percentage(30), // Details panel
+                ])
+                .split(horizontal_chunks[1]);
+
+            // Store pane regions
+            {
+                let mut regions = app.state.click_regions.borrow_mut();
+                regions.download_list = Some(right_chunks[0]);
+                regions.details_panel = Some(right_chunks[1]);
+            }
+
+            render_download_list(app, f, right_chunks[0]);
+            render_details_panel(app, f, right_chunks[1]);
+        }
+        DetailsPosition::Hidden => {
+            // Store pane regions
+            {
+                let mut regions = app.state.click_regions.borrow_mut();
+                regions.download_list = Some(horizontal_chunks[1]);
+                regions.details_panel = None;
+            }
+
+            // Full area for download list
+            render_download_list(app, f, horizontal_chunks[1]);
+        }
+    }
+}
+
+/// Render the folder tree pane
+fn render_folder_tree(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let t = |key: &str| app.state.t(key);
+    let is_focused = app.state.focus_pane == FocusPane::FolderTree;
+
+    // Build list items from tree_items
+    let completed_label = t("tree-completed-node");
+    let items: Vec<ListItem> = app.state.tree_items.iter().enumerate().map(|(i, item)| {
+        let (icon, name): (&str, &str) = match item {
+            FolderTreeItem::Folder(id) => ("📁", id.as_str()),
+            FolderTreeItem::CompletedNode => ("📋", completed_label.as_str()),
+        };
+
+        let style = if i == app.state.tree_selected_index {
+            Style::default()
+                .fg(Color::Rgb(255, 220, 100))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(200, 200, 210))
+        };
+
+        ListItem::new(format!(" {} {}", icon, name)).style(style)
+    }).collect();
+
+    let border_style = if is_focused {
+        Style::default().fg(Color::Rgb(255, 220, 100))
+    } else {
+        Style::default().fg(Color::Rgb(80, 80, 100))
+    };
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(t("pane-folders"))
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::Rgb(60, 60, 80))
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
+
+    // Create a ListState for rendering
+    let mut list_state = ListState::default();
+    list_state.select(Some(app.state.tree_selected_index));
+
+    f.render_stateful_widget(list, area, &mut list_state);
+
+    // Track clickable regions for folder items
+    // Inner area accounts for border (1 cell on each side)
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    let mut folder_items = Vec::new();
+    for (idx, _) in app.state.tree_items.iter().enumerate() {
+        if idx < inner_area.height as usize {
+            let item_rect = Rect {
+                x: inner_area.x,
+                y: inner_area.y + idx as u16,
+                width: inner_area.width,
+                height: 1,
+            };
+            folder_items.push((idx, item_rect));
+        }
+    }
+
+    {
+        let mut regions = app.state.click_regions.borrow_mut();
+        regions.folder_items = folder_items;
+    }
+}
+
+/// Render download list table
+fn render_download_list(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let t = |key: &str| app.state.t(key);
+    let is_focused = app.state.focus_pane == FocusPane::DownloadList;
+    let is_viewing_history = app.state.is_viewing_completed_node();
+
+    let filtered = app.state.filtered_downloads();
+    let count = filtered.len();
+
+    // Create table header with inverted colors for better visibility
+    let header = Row::new(vec![
+        Cell::from(t("column-sel")),
+        Cell::from(t("column-status")),
+        Cell::from(t("column-filename")),
+        Cell::from(t("column-size")),
+        Cell::from(t("column-progress")),
+        Cell::from(t("column-speed")),
+        Cell::from(t("column-eta")),
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(100, 100, 120))
+            .add_modifier(Modifier::BOLD),
+    )
+    .height(1);
+
+    // Create table rows
+    // Note: ratatui's Table handles viewport rendering internally,
+    // so we create all rows but the widget only renders visible ones
+    let rows: Vec<Row> = filtered
+        .iter()
+        .map(|task| {
+            let status_icon = status_icon(app, &task.status);
+            // Use red for failed items in history view
+            let status_color = if is_viewing_history && task.status == DownloadStatus::Error {
+                Color::Red
+            } else {
+                status_color(&task.status)
+            };
+
+            // Selection indicator
+            let sel_indicator = if app.state.is_download_selected(task.id) {
+                "[✓]"
+            } else {
+                "[ ]"
+            };
+            let sel_color = if app.state.is_download_selected(task.id) {
+                Color::Green
+            } else {
+                Color::DarkGray
+            };
+
+            let total_size = task.size.unwrap_or(0);
+            let progress_text = format_progress_with_bar(task.downloaded, task.size);
+
+            // Calculate speed display
+            let speed_text = task.speed()
+                .map(|s| format_speed(s))
+                .unwrap_or_else(|| "-".to_string());
+            
+            // Calculate ETA display
+            let eta_text = task.eta_display()
+                .unwrap_or_else(|| "-".to_string());
+
+            Row::new(vec![
+                Cell::from(sel_indicator).style(Style::default().fg(sel_color)),
+                Cell::from(status_icon).style(Style::default().fg(status_color)),
+                Cell::from(truncate_filename(&task.filename, 50)),
+                Cell::from(format_size(total_size)),
+                Cell::from(progress_text),
+                Cell::from(speed_text),
+                Cell::from(eta_text),
+            ])
+        })
+        .collect();
+
+    // Create table widget
+    let widths = [
+        Constraint::Length(5),   // Selection column
+        Constraint::Length(15),  // Status (wider for emoji)
+        Constraint::Min(20),     // Filename
+        Constraint::Length(10),  // Size
+        Constraint::Length(16),  // Progress (with bar)
+        Constraint::Length(10),  // Speed
+        Constraint::Length(10),  // ETA
+    ];
+
+    // Build title based on context
+    let selection_count = app.state.selected_downloads.len();
+    let base_title = if is_viewing_history {
+        t("pane-history")
+    } else {
+        t("pane-downloads")
+    };
+
+    let title = if selection_count > 0 {
+        if app.state.search_query.is_empty() {
+            format!("{} ({} items, {} selected)", base_title, count, selection_count)
+        } else {
+            format!("{} ({} items, {} selected, filtered: \"{}\")", base_title, count, selection_count, app.state.search_query)
+        }
+    } else if app.state.search_query.is_empty() {
+        format!("{} ({} items)", base_title, count)
+    } else {
+        format!("{} ({} items, filtered: \"{}\")", base_title, count, app.state.search_query)
+    };
+
+    let border_style = if is_focused {
+        Style::default().fg(Color::Rgb(255, 220, 100))
+    } else {
+        Style::default().fg(Color::Rgb(80, 80, 100))
+    };
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(title)
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::Rgb(60, 60, 80))
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
+
+    f.render_stateful_widget(table, area, &mut *app.state.table_state_mut());
+
+    // Track clickable regions for download rows
+    // Inner area: border (1) + we need to account for header row (1)
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 2, // +1 for border, +1 for header
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(3), // -2 for borders, -1 for header
+    };
+
+    let scroll_offset = app.state.table_state().offset();
+    let mut download_rows = Vec::new();
+
+    for visible_idx in 0..inner_area.height as usize {
+        let data_idx = scroll_offset + visible_idx;
+        if data_idx < count {
+            let row_rect = Rect {
+                x: inner_area.x,
+                y: inner_area.y + visible_idx as u16,
+                width: inner_area.width,
+                height: 1,
+            };
+            download_rows.push((data_idx, row_rect));
+        }
+    }
+
+    {
+        let mut regions = app.state.click_regions.borrow_mut();
+        regions.download_rows = download_rows;
+    }
+}
+
+/// Render details panel for selected download
+fn render_details_panel(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let t = |key: &str| app.state.t(key);
+    let is_focused = app.state.focus_pane == FocusPane::DetailsPanel;
+
+    let border_style = if is_focused {
+        Style::default().fg(Color::Rgb(255, 220, 100))
+    } else {
+        Style::default().fg(Color::Rgb(80, 80, 100))
+    };
+
+    if let Some(task) = app.state.get_selected_download() {
+        // Split panel vertically: info (top) and logs (bottom)
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(50),  // Info section
+                Constraint::Percentage(50),  // Log section
+            ])
+            .split(area);
+
+        render_task_info(app, task, f, chunks[0], border_style);
+        render_task_logs(app, task, f, chunks[1], border_style);
+    } else {
+        let paragraph = Paragraph::new(t("message-no-download-selected"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(border_style)
+                    .title(t("pane-details"))
+            )
+            .wrap(Wrap { trim: true });
+        f.render_widget(paragraph, area);
+    }
+}
+
+/// Render task basic info section
+fn render_task_info(app: &TuiApp, task: &crate::download::task::DownloadTask, f: &mut Frame, area: Rect, border_style: Style) {
+    let total_size = task.size.unwrap_or(0);
+    let progress = if total_size > 0 {
+        (task.downloaded as f64 / total_size as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let mut details = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", app.state.t("details-label-status")),
+                Style::default().add_modifier(Modifier::BOLD)
+            ),
+            Span::styled(
+                status_icon(app, &task.status),
+                Style::default().fg(status_color(&task.status)).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", app.state.t("details-label-url")),
+                Style::default().add_modifier(Modifier::BOLD)
+            ),
+        ]),
+        Line::from(Span::raw(&task.url)),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", app.state.t("details-label-save-path")),
+                Style::default().add_modifier(Modifier::BOLD)
+            ),
+        ]),
+        Line::from(Span::raw(task.save_path.to_string_lossy().to_string())),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", app.state.t("details-label-size")),
+                Style::default().add_modifier(Modifier::BOLD)
+            ),
+            Span::raw(format_size(total_size)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", app.state.t("details-label-downloaded")),
+                Style::default().add_modifier(Modifier::BOLD)
+            ),
+            Span::raw(format_size(task.downloaded)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Progress: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(format!("{:.1}%", progress)),
+        ]),
+        Line::from(Span::raw(format_progress_bar(task.downloaded, task.size, 30))),
+    ];
+
+    // Add error message if present - enhanced display with visual prominence
+    if let Some(ref error) = task.error_message {
+        details.push(Line::from(""));
+        details.push(Line::from(Span::styled(
+            "═══════════════════════════════",
+            Style::default().fg(Color::Red),
+        )));
+
+        // Parse error info from status code
+        let error_info = if let Some(status) = task.last_status_code {
+            HttpErrorInfo::from_status(status)
+        } else {
+            // Treat as network error if no status code
+            HttpErrorInfo::network_error(error)
+        };
+
+        // Show error with category icon
+        details.push(Line::from(vec![
+            Span::styled(
+                format!("{} ERROR: ", error_info.category_icon()),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+            ),
+            Span::styled(
+                error,
+                Style::default().fg(Color::Red)
+            ),
+        ]));
+
+        // Show suggestion
+        details.push(Line::from(""));
+        details.push(Line::from(vec![
+            Span::styled("💡 ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                error_info.suggestion.clone(),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC)
+            ),
+        ]));
+
+        // Show retry information
+        if error_info.is_retryable {
+            let retry_msg = if task.retry_count > 0 {
+                format!("Retry #{} will attempt automatically.", task.retry_count + 1)
+            } else {
+                "Press 'r' to retry manually.".to_string()
+            };
+            details.push(Line::from(Span::styled(
+                retry_msg,
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC)
+            )));
+        }
+
+        details.push(Line::from(Span::styled(
+            "═══════════════════════════════",
+            Style::default().fg(Color::Red),
+        )));
+        details.push(Line::from(""));
+        details.push(Line::from(Span::styled(
+            "Check logs below for full details.",
+            Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC)
+        )));
+    }
+
+    let paragraph = Paragraph::new(details)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(app.state.t("pane-details"))
+        )
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(paragraph, area);
+}
+
+/// Render task logs section
+fn render_task_logs(_app: &TuiApp, task: &crate::download::task::DownloadTask, f: &mut Frame, area: Rect, border_style: Style) {
+    let mut log_lines = Vec::new();
+
+    if task.logs.is_empty() {
+        log_lines.push(Line::from(Span::styled(
+            "No log entries yet",
+            Style::default().fg(Color::Gray),
+        )));
+    } else {
+        // Show last N log entries (most recent at bottom)
+        let max_logs = (area.height.saturating_sub(2)) as usize; // Account for borders
+        let start_idx = task.logs.len().saturating_sub(max_logs);
+
+        for log in &task.logs[start_idx..] {
+            let timestamp_str = log.timestamp.format("%H:%M:%S").to_string();
+
+            let (level_str, level_color) = match log.level {
+                LogLevel::Info => ("INFO ", Color::White),
+                LogLevel::Warn => ("WARN ", Color::Yellow),
+                LogLevel::Error => ("ERROR", Color::Red),
+            };
+
+            log_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("[{}] ", timestamp_str),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{} ", level_str),
+                    Style::default().fg(level_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(&log.message),
+            ]));
+        }
+    }
+
+    let log_count = task.logs.len();
+    let title = if log_count > 0 {
+        format!("Logs ({} entries)", log_count)
+    } else {
+        "Logs".to_string()
+    };
+
+    let paragraph = Paragraph::new(log_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(title)
+        )
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
+}
+
+/// Render status bar with keybindings (Quick Actions Bar)
+fn render_status_bar(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let t = |key: &str| app.state.t(key);
+    let t_args = |key: &str, args: Option<&fluent_bundle::FluentArgs>| app.state.t_with_args(key, args);
+
+    let (left_content, right_content) = match app.state.ui_mode {
+        UiMode::Normal => {
+            // Quick actions for main screen
+            let undo_hint = if !app.state.delete_history.is_empty() {
+                let args = fluent_args! {
+                    "count" => app.state.delete_history.len(),
+                };
+                format!(" | {}", t_args("status-normal-undo", Some(&args)))
+            } else {
+                String::new()
+            };
+
+            let args = fluent_args! {
+                "folder" => app.state.current_folder_id.as_str(),
+            };
+            let left = format!(
+                "{} | {}{} | {}",
+                t_args("status-normal-folder", Some(&args)),
+                t("status-normal-actions"),
+                undo_hint,
+                t("status-normal-right")
+            );
+            // Version displayed on the right for main screen
+            let right = t("app-version");
+            (left, right)
+        }
+        // For other screens, show hints on left, nothing on right
+        UiMode::AddDownload => {
+            (t("status-hint-cancel"), String::new())
+        }
+        UiMode::EditingField => {
+            (t("status-hint-cancel"), String::new())
+        }
+        UiMode::DownloadPreview => {
+            (t("status-hint-confirm-cancel"), String::new())
+        }
+        UiMode::Search => {
+            (t("status-hint-finish"), String::new())
+        }
+        UiMode::ChangeFolder => {
+            (t("status-hint-confirm-cancel"), String::new())
+        }
+        UiMode::SwitchFolder => {
+            (t("status-hint-navigate"), String::new())
+        }
+        UiMode::Help => {
+            (t("status-hint-close"), String::new())
+        }
+        UiMode::Settings => {
+            (t("status-hint-settings"), String::new())
+        }
+        UiMode::FolderEdit => {
+            (t("status-hint-folder-edit"), String::new())
+        }
+        UiMode::ConfirmDelete => {
+            (t("status-hint-confirm-yn"), String::new())
+        }
+        UiMode::ContextMenu => {
+            (t("status-hint-menu"), String::new())
+        }
+        UiMode::FolderContextMenu => {
+            (t("status-hint-menu"), String::new())
+        }
+    };
+
+    // Create a single line without border
+    let padding_width = area.width.saturating_sub(
+        (left_content.chars().count() + right_content.chars().count() + 2) as u16
+    );
+
+    let status_line = Line::from(vec![
+        Span::styled(left_content, Style::default().fg(Color::Cyan)),
+        Span::raw(" ".repeat(padding_width as usize)),
+        Span::styled(right_content, Style::default().fg(Color::Yellow)),
+    ]);
+
+    let paragraph = Paragraph::new(status_line);
+    f.render_widget(paragraph, area);
+}
+
+/// Render help screen overlay as centered popup
+fn render_help(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let t = |key: &str| app.state.t(key);
+
+    // Define popup dimensions
+    let dialog_width = 80;
+    let dialog_height = 40;
+
+    // Calculate centered position
+    let dialog_area = Rect {
+        x: (area.width.saturating_sub(dialog_width)) / 2,
+        y: (area.height.saturating_sub(dialog_height)) / 2,
+        width: dialog_width.min(area.width),
+        height: dialog_height.min(area.height),
+    };
+
+    let help_text = vec![
+        Line::from(Span::styled(
+            t("help-title"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(t("help-section-primary"), Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(format!("  {}", t("help-key-space"))),
+        Line::from(format!("  {}", t("help-key-enter"))),
+        Line::from(format!("  {}", t("help-key-a"))),
+        Line::from(format!("  {}", t("help-key-d"))),
+        Line::from(format!("  {}", t("help-key-ctrl-z"))),
+        Line::from(format!("  {}", t("help-key-m"))),
+        Line::from(format!("  {}", t("help-key-e"))),
+        Line::from(format!("  {}", t("help-key-r"))),
+        Line::from(format!("  {}", t("help-key-shift-s"))),
+        Line::from(format!("  {}", t("help-key-shift-p"))),
+        Line::from(""),
+        Line::from(Span::styled(t("help-section-multi"), Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(format!("  {}", t("help-key-v"))),
+        Line::from(format!("  {}", t("help-key-v-shift"))),
+        Line::from(format!("  {}", t("help-key-esc-clear"))),
+        Line::from(format!("  {}", t("help-key-multi-action"))),
+        Line::from(""),
+        Line::from(Span::styled(t("help-section-navigation"), Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(format!("  {}", t("help-key-jk"))),
+        Line::from(format!("  {}", t("help-key-g"))),
+        Line::from(format!("  {}", t("help-key-g-shift"))),
+        Line::from(format!("  {}", t("help-key-ctrl-d"))),
+        Line::from(format!("  {}", t("help-key-ctrl-u"))),
+        Line::from(""),
+        Line::from(Span::styled(t("help-section-panes"), Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(format!("  {}", t("help-key-prev-pane"))),
+        Line::from(format!("  {}", t("help-key-next-pane"))),
+        Line::from(""),
+        Line::from(Span::styled(t("help-section-search"), Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(format!("  {}", t("help-key-slash"))),
+        Line::from(format!("  {}", t("help-key-esc-search"))),
+        Line::from(""),
+        Line::from(Span::styled(t("help-section-ui"), Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(format!("  {}", t("help-key-question"))),
+        Line::from(format!("  {}", t("help-key-x"))),
+        Line::from(format!("  {}", t("help-key-i"))),
+        Line::from(format!("  {}", t("help-key-r-shift"))),
+        Line::from(""),
+        Line::from(Span::styled(t("help-section-settings"), Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(format!("  {}", t("help-key-reload-config"))),
+        Line::from(""),
+        Line::from(Span::styled(t("help-section-system"), Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(format!("  {}", t("help-key-quit"))),
+        Line::from(""),
+        Line::from(Span::styled(
+            t("help-footer"),
+            Style::default().fg(Color::Green),
+        )),
+    ];
+
+    let paragraph = Paragraph::new(help_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(app.state.t("dialog-help"))
+                .style(Style::default().bg(Color::Black)),
+        )
+        .wrap(Wrap { trim: false });
+
+    // Clear the background area and render the popup
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(paragraph, dialog_area);
+}
+
+/// Render settings screen with tabs (Application / Folder)
+fn render_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
+    use crate::tui::state::SettingsSection;
+
+    // Split into tabs and content
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+
+    // Render tabs
+    render_settings_tabs(app, f, chunks[0]);
+
+    // Render section content
+    match app.state.settings_section {
+        SettingsSection::Application => render_application_settings(app, f, chunks[1]),
+        SettingsSection::Folder => {
+            // Split into left (folder list) and right (details/editor) panels
+            let folder_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+                .split(chunks[1]);
+
+            render_folder_list(app, f, folder_chunks[0]);
+            render_folder_details(app, f, folder_chunks[1]);
+        }
+    }
+}
+
+/// Render settings section tabs
+fn render_settings_tabs(app: &TuiApp, f: &mut Frame, area: Rect) {
+    use crate::tui::state::SettingsSection;
+
+    let titles = vec!["Application", "Folders"];
+    let selected_index = match app.state.settings_section {
+        SettingsSection::Application => 0,
+        SettingsSection::Folder => 1,
+    };
+
+    let tabs = Tabs::new(titles.clone())
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Rgb(80, 80, 100)))
+                .title(app.state.t("dialog-settings")),
+        )
+        .select(selected_index)
+        .style(Style::default().fg(Color::Rgb(150, 150, 160)))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Rgb(255, 220, 100))
+                .add_modifier(Modifier::BOLD),
+        )
+        .divider(" │ ");
+
+    f.render_widget(tabs, area);
+
+    // Track clickable regions for tabs
+    // Inner area: border (1) on each side
+    let inner_x = area.x + 1;
+    let inner_y = area.y + 1;
+
+    // Calculate tab positions (tabs are separated by " | " which is 3 chars)
+    // Each tab has some padding around the text
+    let mut tab_rects = Vec::new();
+    let mut current_x = inner_x;
+
+    for (idx, title) in titles.iter().enumerate() {
+        // Tab width: title length + 2 for padding
+        let tab_width = title.len() as u16 + 2;
+        let tab_rect = Rect {
+            x: current_x,
+            y: inner_y,
+            width: tab_width,
+            height: 1,
+        };
+        tab_rects.push((idx, tab_rect));
+
+        // Move to next tab position (tab width + separator " | " = 3)
+        current_x += tab_width + 3;
+    }
+
+    {
+        let mut regions = app.state.click_regions.borrow_mut();
+        regions.settings_tabs = tab_rects;
+    }
+}
+
+/// Render application settings
+fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
+    use crate::tui::state::ApplicationSettingsField;
+
+    let config = app.state.app_state.config.try_read();
+    let mut lines = Vec::new();
+
+    // Modern color palette
+    let section_header_color = Color::Rgb(100, 140, 180);
+    let selected_color = Color::Rgb(255, 220, 100);
+    let description_color = Color::Rgb(100, 100, 120);
+    let border_color = Color::Rgb(80, 80, 100);
+    let success_color = Color::Rgb(100, 180, 100);
+    let error_color = Color::Rgb(200, 100, 100);
+    let muted_color = Color::Rgb(120, 120, 130);
+
+    if let Ok(config) = config {
+        lines.push(Line::from(Span::styled(
+            app.state.t("settings-section-application"),
+            Style::default()
+                .fg(section_header_color)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+
+        let fields = ApplicationSettingsField::all();
+        for (idx, field) in fields.iter().enumerate() {
+            let is_selected = idx == app.state.app_settings_field_index;
+            let prefix = if is_selected { "▸ " } else { "  " };
+            let style = if is_selected {
+                Style::default()
+                    .fg(selected_color)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Rgb(180, 180, 190))
+            };
+
+            let value = match field {
+                ApplicationSettingsField::MaxConcurrent => {
+                    config.download.max_concurrent.to_string()
+                }
+                ApplicationSettingsField::MaxConcurrentPerFolder => config
+                    .download
+                    .max_concurrent_per_folder
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| app.state.t("settings-value-not-set")),
+                ApplicationSettingsField::MaxActiveFolders => config
+                    .download
+                    .parallel_folder_count
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| app.state.t("settings-value-not-set")),
+                ApplicationSettingsField::MaxRedirects => {
+                    config.download.max_redirects.to_string()
+                }
+                ApplicationSettingsField::RetryCount => {
+                    config.download.retry_count.to_string()
+                }
+                ApplicationSettingsField::ScriptsEnabled => {
+                    if config.scripts.enabled { 
+                        app.state.t("settings-value-enabled") 
+                    } else { 
+                        app.state.t("settings-value-disabled") 
+                    }
+                }
+                ApplicationSettingsField::SkipDownloadPreview => {
+                    if config.general.skip_download_preview { 
+                        app.state.t("settings-value-enabled") 
+                    } else { 
+                        app.state.t("settings-value-disabled") 
+                    }
+                }
+                ApplicationSettingsField::Language => {
+                    config.general.language.clone()
+                }
+            };
+
+            lines.push(Line::from(Span::styled(
+                format!("{}{}: {}", prefix, app.state.t(field.label_key()), value),
+                style,
+            )));
+
+            // Show description for selected field
+            if is_selected {
+                lines.push(Line::from(Span::styled(
+                    format!("   {}", app.state.t(field.description_key())),
+                    Style::default().fg(description_color).add_modifier(Modifier::ITALIC),
+                )));
+            }
+        }
+
+        // Add constraint info
+        lines.push(Line::from(""));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Constraint:",
+            Style::default().fg(section_header_color),
+        )));
+
+        let max_concurrent = config.download.max_concurrent;
+        let max_per_folder = config
+            .download
+            .max_concurrent_per_folder
+            .unwrap_or(max_concurrent);
+        let active_folders = config.download.parallel_folder_count.unwrap_or(1);
+        let calculated = max_per_folder * active_folders;
+        let constraint_met = calculated <= max_concurrent;
+
+        let constraint_style = if constraint_met {
+            Style::default().fg(success_color)
+        } else {
+            Style::default().fg(error_color)
+        };
+
+        lines.push(Line::from(Span::styled(
+            format!(
+                "({} × {}) = {} {} {}",
+                max_per_folder,
+                active_folders,
+                calculated,
+                if constraint_met { "≤" } else { ">" },
+                max_concurrent
+            ),
+            constraint_style,
+        )));
+
+        if !constraint_met {
+            lines.push(Line::from(Span::styled(
+                "⚠ Constraint violated! Values will be adjusted on save.",
+                Style::default().fg(error_color),
+            )));
+        }
+
+        // Add Scripts section (collapsible)
+        lines.push(Line::from(""));
+        lines.push(Line::from(""));
+
+        let script_dir = config.scripts.directory.clone();
+        let script_files_config = config.scripts.script_files.clone();
+
+        // List all script files
+        let script_files = match std::fs::read_dir(&script_dir) {
+            Ok(entries) => {
+                let mut files: Vec<String> = entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
+                    .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                    .collect();
+                files.sort();
+                files
+            }
+            Err(_) => Vec::new(),
+        };
+
+        let script_count = script_files.len();
+
+        // Collapsible header
+        let expand_icon = if app.state.app_scripts_expanded { "▼" } else { "▶" };
+        lines.push(Line::from(Span::styled(
+            format!("{} Scripts ({} files) - Press 's' to toggle", expand_icon, script_count),
+            Style::default().fg(section_header_color).add_modifier(Modifier::BOLD),
+        )));
+
+        // If expanded, show script files
+        if app.state.app_scripts_expanded {
+            lines.push(Line::from(""));
+            if script_files.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "  No script files found",
+                    Style::default().fg(muted_color),
+                )));
+            } else {
+                for (idx, filename) in script_files.iter().enumerate() {
+                    let is_selected = idx == app.state.script_files_index;
+                    let is_enabled = script_files_config.get(filename).copied().unwrap_or(true);
+
+                    let prefix = if is_selected { "  ▸ " } else { "    " };
+                    let status = if is_enabled { "✓" } else { "✗" };
+
+                    let style = if is_selected {
+                        Style::default().fg(selected_color).add_modifier(Modifier::BOLD)
+                    } else if is_enabled {
+                        Style::default().fg(success_color)
+                    } else {
+                        Style::default().fg(error_color)
+                    };
+
+                    lines.push(Line::from(vec![
+                        Span::styled(prefix, style),
+                        Span::styled(format!("{} ", status), style),
+                        Span::styled(filename.clone(), style),
+                    ]));
+                }
+
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    app.state.t("help-script-toggle"),
+                    Style::default().fg(muted_color),
+                )));
+            }
+        }
+    }
+
+    // Add help text
+    lines.push(Line::from(""));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        app.state.t("help-edit-field"),
+        Style::default().fg(success_color),
+    )));
+    lines.push(Line::from(Span::styled(
+        "Tab: Switch to Folders",
+        Style::default().fg(section_header_color),
+    )));
+    lines.push(Line::from(Span::styled(
+        "x/Esc: Close",
+        Style::default().fg(muted_color),
+    )));
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
+                .title(app.state.t("dialog-details"))
+        )
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
+}
+
+/// Render folder list (left panel)
+fn render_folder_list(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let config = app.state.app_state.config.try_read();
+
+    // Modern color palette
+    let selected_color = Color::Rgb(255, 220, 100);
+    let border_color = Color::Rgb(80, 80, 100);
+    let success_color = Color::Rgb(100, 180, 100);
+    let error_color = Color::Rgb(200, 100, 100);
+    let section_header_color = Color::Rgb(100, 140, 180);
+    let muted_color = Color::Rgb(120, 120, 130);
+
+    let mut folder_items = Vec::new();
+    let mut folder_count = 0;
+
+    if let Ok(config) = config {
+        let mut folder_ids: Vec<String> = config.folders.keys().cloned().collect();
+        folder_ids.sort();
+        folder_count = folder_ids.len();
+
+        for (idx, folder_id) in folder_ids.iter().enumerate() {
+            let is_selected = idx == app.state.settings_folder_index;
+            let style = if is_selected {
+                Style::default()
+                    .fg(selected_color)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Rgb(180, 180, 190))
+            };
+
+            let prefix = if is_selected {
+                "▸ "
+            } else {
+                "  "
+            };
+
+            folder_items.push(Line::from(Span::styled(
+                format!("{}{}", prefix, folder_id),
+                style,
+            )));
+        }
+    }
+
+    if folder_items.is_empty() {
+        folder_items.push(Line::from(Span::styled(
+            "No folders",
+            Style::default().fg(muted_color),
+        )));
+    }
+
+    // Add help text at bottom
+    folder_items.push(Line::from(""));
+    folder_items.push(Line::from(""));
+    folder_items.push(Line::from(Span::styled(
+        "n: new folder",
+        Style::default().fg(success_color),
+    )));
+    folder_items.push(Line::from(Span::styled(
+        "d: delete",
+        Style::default().fg(error_color),
+    )));
+    folder_items.push(Line::from(Span::styled(
+        "s: save config",
+        Style::default().fg(section_header_color),
+    )));
+    folder_items.push(Line::from(Span::styled(
+        "x/Esc: close",
+        Style::default().fg(muted_color),
+    )));
+
+    let paragraph = Paragraph::new(folder_items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
+                .title(app.state.t("dialog-folders"))
+        )
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
+
+    // Track clickable regions for folder items
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    let mut folder_item_rects = Vec::new();
+    for idx in 0..folder_count {
+        if idx < inner_area.height as usize {
+            let item_rect = Rect {
+                x: inner_area.x,
+                y: inner_area.y + idx as u16,
+                width: inner_area.width,
+                height: 1,
+            };
+            folder_item_rects.push((idx, item_rect));
+        }
+    }
+
+    {
+        let mut regions = app.state.click_regions.borrow_mut();
+        regions.settings_folder_items = folder_item_rects;
+    }
+}
+
+/// Render folder details/editor (right panel)
+fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let config = app.state.app_state.config.try_read();
+    let is_edit_mode = app.state.ui_mode == UiMode::FolderEdit;
+    let field_index = app.state.settings_field_index;
+
+    // Modern color palette
+    let selected_color = Color::Rgb(255, 220, 100);
+    let section_header_color = Color::Rgb(100, 140, 180);
+    let border_color = Color::Rgb(80, 80, 100);
+    let success_color = Color::Rgb(100, 180, 100);
+    let error_color = Color::Rgb(200, 100, 100);
+    let muted_color = Color::Rgb(120, 120, 130);
+    let text_color = Color::Rgb(180, 180, 190);
+
+    let mut detail_lines = Vec::new();
+
+    if let Ok(config) = config {
+        // Get selected folder
+        let mut folder_ids: Vec<String> = config.folders.keys().cloned().collect();
+        folder_ids.sort();
+
+        let selected_folder_id = if app.state.settings_folder_index < folder_ids.len() {
+            Some(folder_ids[app.state.settings_folder_index].clone())
+        } else {
+            None
+        };
+
+        if let Some(ref folder_id) = selected_folder_id {
+            if let Some(folder_config) = config.folders.get(folder_id) {
+                detail_lines.push(Line::from(Span::styled(
+                    format!("Folder: {}", folder_id),
+                    Style::default()
+                        .fg(selected_color)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                detail_lines.push(Line::from(""));
+
+                // Helper to create field line with selection indicator
+                let make_field_line = |idx: usize, label: &str, value: String| {
+                    let is_selected = is_edit_mode && field_index == idx;
+                    let prefix = if is_selected { "▸ " } else { "  " };
+                    let style = if is_selected {
+                        Style::default().fg(selected_color).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(text_color)
+                    };
+                    Line::from(Span::styled(format!("{}{}: {}", prefix, label, value), style))
+                };
+
+                // Field 0: Save Path
+                detail_lines.push(make_field_line(
+                    0,
+                    "Save Path",
+                    folder_config.save_path.display().to_string(),
+                ));
+
+                // Field 1: Auto-Date Directory
+                let auto_date_str = if folder_config.auto_date_directory {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                };
+                detail_lines.push(make_field_line(1, "Auto-Date Directory", auto_date_str.to_string()));
+
+                // Field 2: Auto-Start Downloads
+                let auto_start_str = if folder_config.auto_start_downloads {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                };
+                detail_lines.push(make_field_line(2, "Auto-Start Downloads", auto_start_str.to_string()));
+
+                // Field 3: Scripts
+                let scripts_status = match folder_config.scripts_enabled {
+                    Some(true) => "Enabled (override)",
+                    Some(false) => "Disabled (override)",
+                    None => "Inherit from app",
+                };
+                detail_lines.push(make_field_line(3, "Scripts", scripts_status.to_string()));
+
+                // Field 4: Max Concurrent
+                let max_concurrent_str = folder_config
+                    .max_concurrent
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "Inherit from app".to_string());
+                detail_lines.push(make_field_line(4, "Max Concurrent", max_concurrent_str));
+
+                // Field 5: User Agent
+                let user_agent_str = folder_config
+                    .user_agent
+                    .as_ref()
+                    .map(|s| s.clone())
+                    .unwrap_or_else(|| "Inherit from app".to_string());
+                detail_lines.push(make_field_line(5, "User Agent", user_agent_str));
+
+                // Field 6: Headers
+                let headers_str = if folder_config.default_headers.is_empty() {
+                    "None".to_string()
+                } else {
+                    format!("{} headers", folder_config.default_headers.len())
+                };
+                detail_lines.push(make_field_line(6, "Headers", headers_str));
+
+                // Show headers details if not empty
+                if !folder_config.default_headers.is_empty() {
+                    detail_lines.push(Line::from(""));
+                    for (key, value) in &folder_config.default_headers {
+                        detail_lines.push(Line::from(Span::styled(
+                            format!("    {}: {}", key, value),
+                            Style::default().fg(muted_color),
+                        )));
+                    }
+                }
+
+                // Add Scripts section (collapsible)
+                detail_lines.push(Line::from(""));
+                detail_lines.push(Line::from(""));
+
+                let script_dir = config.scripts.directory.clone();
+                let app_script_files = config.scripts.script_files.clone();
+                let folder_script_files = folder_config.script_files.as_ref();
+
+                // List all script files
+                let script_files = match std::fs::read_dir(&script_dir) {
+                    Ok(entries) => {
+                        let mut files: Vec<String> = entries
+                            .filter_map(|e| e.ok())
+                            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
+                            .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                            .collect();
+                        files.sort();
+                        files
+                    }
+                    Err(_) => Vec::new(),
+                };
+
+                let script_count = script_files.len();
+
+                // Collapsible header
+                let expand_icon = if app.state.folder_scripts_expanded { "▼" } else { "▶" };
+                detail_lines.push(Line::from(Span::styled(
+                    format!("{} Scripts ({} files) - Press 's' to toggle", expand_icon, script_count),
+                    Style::default().fg(section_header_color).add_modifier(Modifier::BOLD),
+                )));
+
+                // If expanded, show script files
+                if app.state.folder_scripts_expanded {
+                    detail_lines.push(Line::from(""));
+                    if script_files.is_empty() {
+                        detail_lines.push(Line::from(Span::styled(
+                            "  No script files found",
+                            Style::default().fg(muted_color),
+                        )));
+                    } else {
+                        for (idx, filename) in script_files.iter().enumerate() {
+                            let is_selected = idx == app.state.script_files_index;
+
+                            // Determine effective status (with inheritance)
+                            let (status_char, status_text, style_color) = if let Some(folder_files) = folder_script_files {
+                                if let Some(&enabled) = folder_files.get(filename) {
+                                    // Folder override
+                                    if enabled {
+                                        ("✓", filename.clone(), success_color)
+                                    } else {
+                                        ("✗", filename.clone(), error_color)
+                                    }
+                                } else {
+                                    // Inherit from Application
+                                    let app_enabled = app_script_files.get(filename).copied().unwrap_or(true);
+                                    if app_enabled {
+                                        ("○", format!("{} (inherit)", filename), muted_color)
+                                    } else {
+                                        ("○", format!("{} (inherit)", filename), Color::Rgb(80, 80, 90))
+                                    }
+                                }
+                            } else {
+                                // No folder override, all inherit
+                                let app_enabled = app_script_files.get(filename).copied().unwrap_or(true);
+                                if app_enabled {
+                                    ("○", format!("{} (inherit)", filename), muted_color)
+                                } else {
+                                    ("○", format!("{} (inherit)", filename), Color::Rgb(80, 80, 90))
+                                }
+                            };
+
+                            let prefix = if is_selected { "  ▸ " } else { "    " };
+
+                            let style = if is_selected {
+                                Style::default().fg(selected_color).add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(style_color)
+                            };
+
+                            detail_lines.push(Line::from(vec![
+                                Span::styled(prefix, style),
+                                Span::styled(format!("{} ", status_char), style),
+                                Span::styled(status_text, style),
+                            ]));
+                        }
+
+                        detail_lines.push(Line::from(""));
+                        detail_lines.push(Line::from(Span::styled(
+                            app.state.t("help-script-toggle"),
+                            Style::default().fg(muted_color),
+                        )));
+                    }
+                }
+
+                detail_lines.push(Line::from(""));
+            }
+        } else {
+            detail_lines.push(Line::from(Span::styled(
+                "No folder selected",
+                Style::default().fg(muted_color),
+            )));
+        }
+
+        // Application settings summary at bottom
+        detail_lines.push(Line::from(""));
+        detail_lines.push(Line::from(Span::styled(
+            "Application Settings:",
+            Style::default()
+                .fg(section_header_color)
+                .add_modifier(Modifier::BOLD),
+        )));
+        detail_lines.push(Line::from(Span::styled(
+            format!("  Max Concurrent: {}", config.download.max_concurrent),
+            Style::default().fg(text_color),
+        )));
+        detail_lines.push(Line::from(Span::styled(
+            format!("  Max Redirects: {}", config.download.max_redirects),
+            Style::default().fg(text_color),
+        )));
+        detail_lines.push(Line::from(Span::styled(
+            format!("  Retry Count: {}", config.download.retry_count),
+            Style::default().fg(text_color),
+        )));
+        detail_lines.push(Line::from(Span::styled(
+            format!("  Scripts: {}", if config.scripts.enabled { "Enabled" } else { "Disabled" }),
+            Style::default().fg(text_color),
+        )));
+    } else {
+        detail_lines.push(Line::from(Span::styled(
+            "Unable to read configuration",
+            Style::default().fg(error_color),
+        )));
+    }
+
+    detail_lines.push(Line::from(""));
+
+    // Show different help text based on mode
+    if is_edit_mode {
+        detail_lines.push(Line::from(Span::styled(
+            app.state.t("help-folder-edit-navigate"),
+            Style::default().fg(success_color),
+        )));
+        detail_lines.push(Line::from(Span::styled(
+            "Toggle: auto-date, scripts | Input: save-path, max-concurrent, user-agent",
+            Style::default().fg(muted_color),
+        )));
+    } else {
+        detail_lines.push(Line::from(Span::styled(
+            app.state.t("help-folder-list"),
+            Style::default().fg(success_color),
+        )));
+    }
+
+    let paragraph = Paragraph::new(detail_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
+                .title(app.state.t("dialog-folder-details"))
+        )
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
+
+    // Show input dialog if editing a text field
+    if let Some(field) = app.state.settings_edit_field {
+        use super::state::SettingsField;
+        match field {
+            SettingsField::FolderSavePath
+            | SettingsField::FolderMaxConcurrent
+            | SettingsField::FolderUserAgent => {
+                render_field_edit_dialog(app, f, area, field);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Render input dialog for editing a field
+fn render_field_edit_dialog(app: &TuiApp, f: &mut Frame, area: Rect, field: super::state::SettingsField) {
+    use super::state::SettingsField;
+
+    let dialog_width = 60;
+    let dialog_height = 5;
+
+    let dialog_area = Rect {
+        x: (area.width.saturating_sub(dialog_width)) / 2,
+        y: (area.height.saturating_sub(dialog_height)) / 2,
+        width: dialog_width,
+        height: dialog_height,
+    };
+
+    let label = match field {
+        SettingsField::FolderSavePath => "Save Path",
+        SettingsField::FolderMaxConcurrent => "Max Concurrent (leave empty to inherit)",
+        SettingsField::FolderUserAgent => "User Agent (leave empty to inherit)",
+        _ => "Edit Field",
+    };
+
+    let input_widget = Paragraph::new(app.state.input_buffer.as_str())
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("Edit {}", label))
+                .style(Style::default().fg(Color::Yellow)),
+        )
+        .style(Style::default().fg(Color::White));
+
+    // Clear area and render dialog
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(input_widget, dialog_area);
+}
+
+/// Render add download dialog (centered overlay)
+fn render_add_download_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let dialog_width = 60;
+    let dialog_height = 5;
+
+    let dialog_area = Rect {
+        x: (area.width.saturating_sub(dialog_width)) / 2,
+        y: (area.height.saturating_sub(dialog_height)) / 2,
+        width: dialog_width,
+        height: dialog_height,
+    };
+
+    let text = format!("{} {}", app.state.t("prompt-url"), app.state.input_buffer);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(app.state.t("dialog-add-download"))
+                .style(Style::default().bg(Color::Black)),
+        );
+
+    f.render_widget(paragraph, dialog_area);
+}
+
+/// Render generic input dialog with custom title and prompt (centered overlay)
+fn render_input_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let has_error = app.state.validation_error.is_some();
+    let dialog_width = 60;
+    let dialog_height = if has_error { 8 } else { 5 };  // Expand for error
+
+    let dialog_area = Rect {
+        x: (area.width.saturating_sub(dialog_width)) / 2,
+        y: (area.height.saturating_sub(dialog_height)) / 2,
+        width: dialog_width,
+        height: dialog_height,
+    };
+
+    // Split into input area and optional error area
+    let chunks = if has_error {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(5), Constraint::Length(3)])
+            .split(dialog_area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0)])
+            .split(dialog_area)
+    };
+
+    // Render input field
+    let text = format!("{} {}", app.state.input_prompt, app.state.input_buffer);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(app.state.input_title.clone())
+                .style(Style::default().bg(Color::Black)),
+        );
+    f.render_widget(Clear, chunks[0]);
+    f.render_widget(paragraph, chunks[0]);
+
+    // Render error message if present
+    if let Some(ref error_msg) = app.state.validation_error {
+        let error_para = Paragraph::new(error_msg.as_str())
+            .block(
+                Block::default()
+                    .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+                    .style(Style::default().bg(Color::Black))
+            )
+            .style(Style::default().fg(Color::Red))
+            .wrap(Wrap { trim: true });
+        f.render_widget(Clear, chunks[1]);
+        f.render_widget(error_para, chunks[1]);
+    }
+}
+
+/// Render download preview dialog (centered overlay)
+fn render_download_preview_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let dialog_width = 80;
+    let dialog_height = 18;
+
+    let dialog_area = Rect {
+        x: (area.width.saturating_sub(dialog_width)) / 2,
+        y: (area.height.saturating_sub(dialog_height)) / 2,
+        width: dialog_width,
+        height: dialog_height,
+    };
+
+    let mut lines = Vec::new();
+
+    // URL
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{} ", app.state.t("prompt-url")),
+            Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan)
+        ),
+        Span::raw(&app.state.input_buffer),
+    ]));
+    lines.push(Line::from(""));
+
+    // Show preview info if available
+    if let Some(ref info) = app.state.preview_info {
+        // Filename
+        let filename = info.filename.clone().unwrap_or_else(|| {
+            app.state.input_buffer
+                .split('/')
+                .last()
+                .unwrap_or("download")
+                .to_string()
+        });
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} ", app.state.t("details-label-filename")),
+                Style::default().add_modifier(Modifier::BOLD).fg(Color::Green)
+            ),
+            Span::raw(filename),
+        ]));
+
+        // File size
+        if let Some(size) = info.size {
+            let size_str = format_size(size);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{} ", app.state.t("details-label-size-icon")),
+                    Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow)
+                ),
+                Span::raw(size_str),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{} ", app.state.t("details-label-size-icon")),
+                    Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow)
+                ),
+                Span::styled("Unknown", Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+
+        // Resume support
+        let resume_text = if info.resume_supported { "✓ Yes" } else { "✗ No" };
+        let resume_color = if info.resume_supported { Color::Green } else { Color::Red };
+        lines.push(Line::from(vec![
+            Span::styled("🔄 Resume Support: ", Style::default().add_modifier(Modifier::BOLD).fg(Color::Magenta)),
+            Span::styled(resume_text, Style::default().fg(resume_color)),
+        ]));
+
+        // Last modified
+        if let Some(ref last_modified) = info.last_modified {
+            lines.push(Line::from(vec![
+                Span::styled("📅 Last Modified: ", Style::default().add_modifier(Modifier::BOLD).fg(Color::Blue)),
+                Span::raw(last_modified),
+            ]));
+        }
+
+        // ETag
+        if let Some(ref etag) = info.etag {
+            lines.push(Line::from(vec![
+                Span::styled("🏷️  ETag: ", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan)),
+                Span::raw(etag),
+            ]));
+        }
+    } else {
+        // Show loading/error message
+        lines.push(Line::from(vec![
+            Span::styled("⚠️  ", Style::default().fg(Color::Yellow)),
+            Span::styled("Failed to fetch download information", Style::default().fg(Color::Yellow)),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::raw("You can still proceed with the download, but file information is not available."),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Press ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(" to confirm or ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::styled(" to cancel", Style::default().fg(Color::DarkGray)),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("    [ Confirm (Enter) ]", Style::default().fg(Color::Green)),
+        Span::raw("         "),
+        Span::styled("[ Cancel (Esc) ]    ", Style::default().fg(Color::Red)),
+    ]));
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(app.state.t("dialog-download-preview"))
+                .style(Style::default().bg(Color::Black)),
+        )
+        .wrap(Wrap { trim: true });
+
+    // Clear area and render dialog
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(paragraph, dialog_area);
+
+    // Track button regions for mouse clicks
+    let button_y = dialog_area.y + dialog_height - 2;
+    let inner_width = dialog_width - 2;
+    let center_x = dialog_area.x + 1 + inner_width / 2;
+
+    // Confirm button: left side
+    let confirm_button = Rect {
+        x: center_x.saturating_sub(20),
+        y: button_y,
+        width: 20,
+        height: 1,
+    };
+
+    // Cancel button: right side
+    let cancel_button = Rect {
+        x: center_x + 5,
+        y: button_y,
+        width: 18,
+        height: 1,
+    };
+
+    {
+        let mut regions = app.state.click_regions.borrow_mut();
+        regions.dialog_buttons = vec![
+            ("confirm".to_string(), confirm_button),
+            ("cancel".to_string(), cancel_button),
+        ];
+    }
+}
+
+/// Render change folder dialog (centered overlay)
+fn render_change_folder_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let dialog_width = 80;
+    let dialog_height = 7;
+
+    let dialog_area = Rect {
+        x: (area.width.saturating_sub(dialog_width)) / 2,
+        y: (area.height.saturating_sub(dialog_height)) / 2,
+        width: dialog_width,
+        height: dialog_height,
+    };
+
+    // Get current path from selected download
+    let current_path = app
+        .state
+        .get_selected_download()
+        .map(|task| task.save_path.to_string_lossy().to_string())
+        .unwrap_or_else(|| "No download selected".to_string());
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Current: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(&current_path),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("New: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(&app.state.input_buffer),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(app.state.t("dialog-change-save-path"))
+                .style(Style::default().bg(Color::Black)),
+        );
+
+    f.render_widget(paragraph, dialog_area);
+}
+
+/// Render confirm delete dialog (centered overlay)
+fn render_confirm_delete_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let dialog_width = 60;
+    let dialog_height = 9;
+
+    let dialog_area = Rect {
+        x: (area.width.saturating_sub(dialog_width)) / 2,
+        y: (area.height.saturating_sub(dialog_height)) / 2,
+        width: dialog_width,
+        height: dialog_height,
+    };
+
+    // Get filename of selected download
+    let filename = app
+        .state
+        .get_selected_download()
+        .map(|task| truncate_filename(&task.filename, 50))
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    let lines = vec![
+        Line::from(Span::styled(
+            "Are you sure you want to delete this download?",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("File: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(&filename),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Press Y to confirm, N or Esc to cancel",
+            Style::default().fg(Color::Cyan),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("      [ Yes (Y) ]", Style::default().fg(Color::Green)),
+            Span::raw("       "),
+            Span::styled("[ No (N) ]      ", Style::default().fg(Color::Red)),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(app.state.t("dialog-confirm-delete"))
+                .style(Style::default().bg(Color::Black)),
+        )
+        .alignment(Alignment::Center);
+
+    // Clear area and render dialog
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(paragraph, dialog_area);
+
+    // Track button regions for mouse clicks
+    // Buttons are on the last content line (dialog_area.y + dialog_height - 2)
+    let button_y = dialog_area.y + dialog_height - 2;
+    let inner_width = dialog_width - 2;
+    let center_x = dialog_area.x + 1 + inner_width / 2;
+
+    // Yes button: approximately 6 chars left of center, 11 chars wide
+    let yes_button = Rect {
+        x: center_x.saturating_sub(15),
+        y: button_y,
+        width: 13,
+        height: 1,
+    };
+
+    // No button: approximately 6 chars right of center, 10 chars wide
+    let no_button = Rect {
+        x: center_x + 3,
+        y: button_y,
+        width: 12,
+        height: 1,
+    };
+
+    {
+        let mut regions = app.state.click_regions.borrow_mut();
+        regions.dialog_buttons = vec![
+            ("yes".to_string(), yes_button),
+            ("no".to_string(), no_button),
+        ];
+    }
+}
+
+/// Get status icon for download status
+fn status_icon(app: &TuiApp, status: &DownloadStatus) -> String {
+    match status {
+        DownloadStatus::Pending => app.state.t("status-pending"),
+        DownloadStatus::Downloading => app.state.t("status-downloading"),
+        DownloadStatus::Paused => app.state.t("status-paused"),
+        DownloadStatus::Completed => app.state.t("status-completed"),
+        DownloadStatus::Error => app.state.t("status-error"),
+        DownloadStatus::Deleted => app.state.t("status-deleted"),
+    }
+}
+
+/// Get color for download status
+fn status_color(status: &DownloadStatus) -> Color {
+    match status {
+        DownloadStatus::Pending => Color::Rgb(255, 200, 100),    // Warm yellow
+        DownloadStatus::Downloading => Color::Rgb(100, 200, 255), // Sky blue
+        DownloadStatus::Paused => Color::Rgb(150, 150, 160),      // Muted gray
+        DownloadStatus::Completed => Color::Rgb(100, 220, 130),   // Fresh green
+        DownloadStatus::Error => Color::Rgb(255, 100, 100),       // Soft red
+        DownloadStatus::Deleted => Color::Rgb(120, 120, 130),     // Dark gray
+    }
+}
+
+/// Format bytes to human-readable size
+fn format_size(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit_idx = 0;
+
+    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+
+    if unit_idx == 0 {
+        format!("{} {}", bytes, UNITS[unit_idx])
+    } else {
+        format!("{:.2} {}", size, UNITS[unit_idx])
+    }
+}
+
+/// Format speed (bytes per second) to human-readable format
+fn format_speed(bytes_per_sec: f64) -> String {
+    const UNITS: &[&str] = &["B/s", "KB/s", "MB/s", "GB/s"];
+    let mut speed = bytes_per_sec;
+    let mut unit_idx = 0;
+
+    while speed >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        speed /= 1024.0;
+        unit_idx += 1;
+    }
+
+    if unit_idx == 0 {
+        format!("{:.0} {}", speed, UNITS[unit_idx])
+    } else {
+        format!("{:.1} {}", speed, UNITS[unit_idx])
+    }
+}
+
+/// Truncate filename with ellipsis if too long, preserving extension
+/// Uses unicode-width for accurate display width (handles Japanese/CJK correctly)
+fn truncate_filename(filename: &str, max_width: usize) -> String {
+    // Use display width (accounts for East Asian characters = 2 cells)
+    let display_width = filename.width();
+
+    if display_width <= max_width {
+        return filename.to_string();
+    }
+
+    // Try to preserve extension
+    if let Some(dot_pos) = filename.rfind('.') {
+        let (name, ext) = filename.split_at(dot_pos);
+        let ext_width = ext.width();
+
+        // If extension is reasonable (< 10 width), keep it
+        if ext_width < 10 && ext_width + 3 < max_width {
+            // Calculate how much width we can use for the name part
+            let target_name_width = max_width.saturating_sub(ext_width + 3); // 3 for "..."
+
+            if target_name_width > 0 {
+                // Truncate name by width, not character count
+                let mut truncated_name = String::new();
+                let mut current_width = 0;
+
+                for ch in name.chars() {
+                    let ch_width = ch.width().unwrap_or(1);
+                    if current_width + ch_width > target_name_width {
+                        break;
+                    }
+                    truncated_name.push(ch);
+                    current_width += ch_width;
+                }
+
+                return format!("{}...{}", truncated_name, ext);
+            }
+        }
+    }
+
+    // Fallback: simple truncation with ellipsis at end
+    let target_width = max_width.saturating_sub(3);
+    let mut truncated = String::new();
+    let mut current_width = 0;
+
+    for ch in filename.chars() {
+        let ch_width = ch.width().unwrap_or(1);
+        if current_width + ch_width > target_width {
+            break;
+        }
+        truncated.push(ch);
+        current_width += ch_width;
+    }
+
+    format!("{}...", truncated)
+}
+
+/// Create a visual progress bar using Unicode block characters
+/// Optimized to reduce allocations by using String::with_capacity
+fn format_progress_bar(downloaded: u64, total: Option<u64>, width: usize) -> String {
+    if let Some(total) = total {
+        if total == 0 {
+            return "░".repeat(width);
+        }
+
+        let progress = (downloaded as f64 / total as f64).min(1.0);
+        let filled = (progress * width as f64) as usize;
+        let remaining = width.saturating_sub(filled);
+
+        // Pre-allocate with exact capacity to avoid reallocations
+        let mut bar = String::with_capacity(width * 3); // 3 bytes per UTF-8 character
+        for _ in 0..filled {
+            bar.push('█');
+        }
+        for _ in 0..remaining {
+            bar.push('░');
+        }
+        bar
+    } else {
+        // Unknown total - show indeterminate progress
+        "▓".repeat(width)
+    }
+}
+
+/// Format progress percentage with visual indicator
+fn format_progress_with_bar(downloaded: u64, total: Option<u64>) -> String {
+    if let Some(total) = total {
+        if total == 0 {
+            return "N/A".to_string();
+        }
+        let percentage = (downloaded * 100 / total).min(100);
+        let bar = format_progress_bar(downloaded, Some(total), 10);
+        format!("{:>3}% {}", percentage, bar)
+    } else {
+        "N/A  ░░░░░░░░░░".to_string()
+    }
+}
+
+/// Render context menu (popup actions)
+fn render_switch_folder_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
+    // Get folder list from config
+    // Note: This is called from within the TUI render loop which is already async,
+    // but we can't make this function async. We use try_read() instead.
+    let config = match app.state.app_state.config.try_read() {
+        Ok(cfg) => cfg,
+        Err(_) => {
+            // If we can't acquire the lock, just show an empty list
+            // This shouldn't happen in practice since config updates are rare
+            return;
+        }
+    };
+    let mut folder_ids: Vec<String> = config.folders.keys().cloned().collect();
+    folder_ids.sort();
+    drop(config);
+
+    let selected_index = app.state.folder_picker_index;
+
+    // Calculate dialog dimensions
+    let max_folder_width = folder_ids
+        .iter()
+        .map(|id| id.len())
+        .max()
+        .unwrap_or(20);
+
+    let dialog_width = (max_folder_width as u16 + 8).max(40).min(60);
+    let dialog_height = (folder_ids.len() as u16 + 4).max(8).min(20);
+
+    let dialog_area = Rect {
+        x: (area.width.saturating_sub(dialog_width)) / 2,
+        y: (area.height.saturating_sub(dialog_height)) / 2,
+        width: dialog_width,
+        height: dialog_height,
+    };
+
+    // Create folder list lines
+    let mut folder_lines = Vec::new();
+    for (idx, folder_id) in folder_ids.iter().enumerate() {
+        let is_selected = idx == selected_index;
+        let is_current = folder_id == &app.state.current_folder_id;
+
+        let prefix = if is_selected { "▶ " } else { "  " };
+        let suffix = if is_current { " (current)" } else { "" };
+
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else if is_current {
+            Style::default()
+                .fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        folder_lines.push(Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled(folder_id.clone(), style),
+            Span::styled(suffix, Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(folder_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(app.state.t("dialog-switch-folder"))
+                .style(Style::default().bg(Color::Black)),
+        )
+        .alignment(Alignment::Left);
+
+    // Clear area and render dialog
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(paragraph, dialog_area);
+}
+
+fn render_context_menu(app: &TuiApp, f: &mut Frame, area: Rect) {
+    use super::state::ContextMenuAction;
+
+    let menu_items = ContextMenuAction::all();
+    let selected_index = app.state.context_menu_index;
+
+    // Calculate menu dimensions
+    let max_label_width = menu_items
+        .iter()
+        .map(|item| item.label().len() + item.key_hint().len() + 6) // +6 for spacing and brackets
+        .max()
+        .unwrap_or(40);
+
+    let menu_width = (max_label_width as u16 + 4).min(60); // +4 for borders and padding
+    let menu_height = (menu_items.len() as u16 + 2).min(20); // +2 for borders
+
+    let menu_area = Rect {
+        x: (area.width.saturating_sub(menu_width)) / 2,
+        y: (area.height.saturating_sub(menu_height)) / 2,
+        width: menu_width,
+        height: menu_height,
+    };
+
+    // Create menu lines
+    let mut menu_lines = Vec::new();
+    for (idx, action) in menu_items.iter().enumerate() {
+        let is_selected = idx == selected_index;
+        let prefix = if is_selected { "▶ " } else { "  " };
+
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let key_hint_style = Style::default().fg(Color::DarkGray);
+
+        menu_lines.push(Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled(action.label(), style),
+            Span::raw("  "),
+            Span::styled(format!("[{}]", action.key_hint()), key_hint_style),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(menu_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(app.state.t("dialog-actions"))
+                .style(Style::default().bg(Color::Black)),
+        )
+        .alignment(Alignment::Left);
+
+    // Clear area and render menu
+    f.render_widget(Clear, menu_area);
+    f.render_widget(paragraph, menu_area);
+
+    // Track clickable regions for menu items
+    let inner_area = Rect {
+        x: menu_area.x + 1,
+        y: menu_area.y + 1,
+        width: menu_area.width.saturating_sub(2),
+        height: menu_area.height.saturating_sub(2),
+    };
+
+    let mut menu_item_rects = Vec::new();
+    for (idx, _) in menu_items.iter().enumerate() {
+        if idx < inner_area.height as usize {
+            let item_rect = Rect {
+                x: inner_area.x,
+                y: inner_area.y + idx as u16,
+                width: inner_area.width,
+                height: 1,
+            };
+            menu_item_rects.push(item_rect);
+        }
+    }
+
+    {
+        let mut regions = app.state.click_regions.borrow_mut();
+        regions.context_menu = Some(menu_area);
+        regions.context_menu_items = menu_item_rects;
+    }
+}
+
+
+/// Render folder context menu overlay
+fn render_folder_context_menu(app: &TuiApp, f: &mut Frame, area: Rect) {
+    use super::state::FolderContextMenuAction;
+
+    let is_completed = app.state.is_viewing_completed_node();
+    let menu_items = if is_completed {
+        FolderContextMenuAction::all_for_completed()
+    } else {
+        FolderContextMenuAction::all_for_folder()
+    };
+    let selected_index = app.state.folder_context_menu_index;
+
+    // Calculate menu dimensions
+    let max_label_width = menu_items
+        .iter()
+        .map(|item| {
+            app.state.t(item.label_key()).len() + item.key_hint().len() + 6
+        })
+        .max()
+        .unwrap_or(40);
+
+    let menu_width = (max_label_width as u16 + 4).min(60);
+    let menu_height = (menu_items.len() as u16 + 2).min(20);
+
+    let menu_area = Rect {
+        x: (area.width.saturating_sub(menu_width)) / 2,
+        y: (area.height.saturating_sub(menu_height)) / 2,
+        width: menu_width,
+        height: menu_height,
+    };
+
+    // Create menu lines
+    let mut menu_lines = Vec::new();
+    for (idx, action) in menu_items.iter().enumerate() {
+        let is_selected = idx == selected_index;
+        let prefix = if is_selected { "▶ " } else { "  " };
+
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let key_hint_style = Style::default().fg(Color::DarkGray);
+
+        menu_lines.push(Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled(app.state.t(action.label_key()), style),
+            Span::raw("  "),
+            Span::styled(format!("[{}]", action.key_hint()), key_hint_style),
+        ]));
+    }
+
+    // Get title based on context
+    let title = if is_completed {
+        app.state.t("dialog-history-actions")
+    } else {
+        app.state.t("dialog-folder-actions")
+    };
+
+    let paragraph = Paragraph::new(menu_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .style(Style::default().bg(Color::Black)),
+        )
+        .alignment(Alignment::Left);
+
+    // Clear area and render menu
+    f.render_widget(Clear, menu_area);
+    f.render_widget(paragraph, menu_area);
+
+    // Track clickable regions for menu items
+    let inner_area = Rect {
+        x: menu_area.x + 1,
+        y: menu_area.y + 1,
+        width: menu_area.width.saturating_sub(2),
+        height: menu_area.height.saturating_sub(2),
+    };
+
+    let mut menu_item_rects = Vec::new();
+    for (idx, _) in menu_items.iter().enumerate() {
+        if idx < inner_area.height as usize {
+            let item_rect = Rect {
+                x: inner_area.x,
+                y: inner_area.y + idx as u16,
+                width: inner_area.width,
+                height: 1,
+            };
+            menu_item_rects.push(item_rect);
+        }
+    }
+
+    {
+        let mut regions = app.state.click_regions.borrow_mut();
+        regions.context_menu = Some(menu_area);
+        regions.context_menu_items = menu_item_rects;
+    }
+}

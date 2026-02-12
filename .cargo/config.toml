@@ -1,0 +1,6 @@
+# Cargo build configuration
+
+[env]
+# Use prebuilt NASM binaries for aws-lc-sys (avoids needing NASM installed locally)
+# For CI/CD, NASM can be installed directly
+AWS_LC_SYS_PREBUILT_NASM = "1"

@@ -1,0 +1,145 @@
+name: Land Change List (Chromium Style)
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  land:
+    # Only run if a comment starts with "/land" on a Pull Request
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/land')
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: React to comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions -f content='+1'
+
+      - name: Check permissions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if commenter has write access or is admin
+          PERMISSION=$(gh api repos/${{ github.repository }}/collaborators/${{ github.event.comment.user.login }}/permission -q .permission)
+          if [[ "$PERMISSION" != "admin" && "$PERMISSION" != "write" ]]; then
+            gh pr comment ${{ github.event.issue.number }} --body "❌ You don't have permission to land this PR. Only users with write or admin access can use \`/land\`."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch and validate PR
+        id: pr_data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Fetch PR information with all necessary fields
+          PR_JSON=$(gh pr view ${{ github.event.issue.number }} --json title,body,author,url,reviews,baseRefName,headRefName,mergeable,state,statusCheckRollup,isCrossRepository)
+          
+          # Validate PR state
+          STATE=$(echo "$PR_JSON" | jq -r .state)
+          MERGEABLE=$(echo "$PR_JSON" | jq -r .mergeable)
+          
+          if [[ "$STATE" != "OPEN" ]]; then
+            gh pr comment ${{ github.event.issue.number }} --body "❌ Cannot land: PR is not open (current state: $STATE)."
+            exit 1
+          fi
+          
+          if [[ "$MERGEABLE" != "MERGEABLE" ]]; then
+            gh pr comment ${{ github.event.issue.number }} --body "❌ Cannot land: PR has conflicts or is not mergeable. Please rebase and resolve conflicts."
+            exit 1
+          fi
+          
+          # Check if all required checks passed
+          FAILED_CHECKS=$(echo "$PR_JSON" | jq -r '.statusCheckRollup[]? | select(.conclusion != "SUCCESS" and .conclusion != "SKIPPED" and .conclusion != null) | .name' || true)
+          if [[ -n "$FAILED_CHECKS" ]]; then
+            gh pr comment ${{ github.event.issue.number }} --body "❌ Cannot land: Not all status checks passed. Failed checks:
+          \`\`\`
+          $FAILED_CHECKS
+          \`\`\`"
+            exit 1
+          fi
+          
+          # Extract PR metadata
+          echo "PR_TITLE=$(echo "$PR_JSON" | jq -r .title)" >> $GITHUB_ENV
+          echo "PR_URL=$(echo "$PR_JSON" | jq -r .url)" >> $GITHUB_ENV
+          echo "BASE_BRANCH=$(echo "$PR_JSON" | jq -r .baseRefName)" >> $GITHUB_ENV
+          echo "HEAD_BRANCH=$(echo "$PR_JSON" | jq -r .headRefName)" >> $GITHUB_ENV
+          echo "IS_FORK=$(echo "$PR_JSON" | jq -r .isCrossRepository)" >> $GITHUB_ENV
+          
+          # Extract reviewers (unique list of people who approved)
+          REVIEWERS=$(echo "$PR_JSON" | jq -r '.reviews | map(select(.state == "APPROVED")) | map(.author.login) | unique | join(", ")')
+          if [[ -z "$REVIEWERS" || "$REVIEWERS" == "null" ]]; then
+            gh pr comment ${{ github.event.issue.number }} --body "❌ Cannot land: No approved reviews found. This PR requires at least one approval before landing."
+            exit 1
+          fi
+          echo "REVIEWERS=$REVIEWERS" >> $GITHUB_ENV
+
+      - name: Squash and Land
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 1. Sync with base branch
+          git checkout ${{ env.BASE_BRANCH }}
+          git pull origin ${{ env.BASE_BRANCH }}
+          
+          # 2. Merge the PR branch as a squash (with conflict detection)
+          if ! git merge --squash origin/${{ env.HEAD_BRANCH }}; then
+            gh pr comment ${{ github.event.issue.number }} --body "❌ Merge conflict detected during squash merge. Please rebase your PR on the latest ${{ env.BASE_BRANCH }} and resolve conflicts."
+            exit 1
+          fi
+
+          # 3. Prepare the Chromium-style commit message
+          MESSAGE_FILE="commit_msg.txt"
+          echo "${{ env.PR_TITLE }}" > $MESSAGE_FILE
+          echo "" >> $MESSAGE_FILE
+          gh pr view ${{ github.event.issue.number }} --json body -q .body >> $MESSAGE_FILE
+          echo "" >> $MESSAGE_FILE
+          
+          # 4. Append Footers (Chromium style)
+          echo "Bug: N/A" >> $MESSAGE_FILE
+          echo "Reviewed-on: ${{ env.PR_URL }}" >> $MESSAGE_FILE
+          echo "Reviewed-by: ${{ env.REVIEWERS }}" >> $MESSAGE_FILE
+          echo "Landed-by: ${{ github.event.comment.user.login }}" >> $MESSAGE_FILE
+
+          # 5. Commit and Push
+          git commit -F $MESSAGE_FILE
+          git push origin ${{ env.BASE_BRANCH }}
+
+      - name: Close PR and cleanup
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/$COMMIT_SHA"
+          
+          # Close the PR
+          gh pr close ${{ github.event.issue.number }}
+          
+          # Comment with success message
+          gh pr comment ${{ github.event.issue.number }} --body "✅ Successfully landed in commit [\`${COMMIT_SHA:0:7}\`]($COMMIT_URL)"
+          
+          # Delete the head branch if it's not from a fork
+          if [[ "${{ env.IS_FORK }}" == "false" ]]; then
+            echo "Deleting branch ${{ env.HEAD_BRANCH }}"
+            git push origin --delete ${{ env.HEAD_BRANCH }} || echo "Branch already deleted or cannot be deleted"
+          fi
+
+      - name: Comment on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.issue.number }} --body "❌ Failed to land PR. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."

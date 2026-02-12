@@ -1,0 +1,130 @@
+# GGG (Great Grimoire Grabber) Configuration Example
+# Copy this file to your config directory and customize as needed
+#
+# Config directory locations (searched in priority order):
+#   1. --config flag (highest priority)
+#   2. GGG_CONFIG_DIR environment variable
+#   3. %APPDATA%\ggg\ (Windows) / ~/.config/ggg/ (Linux/macOS)
+#   4. ./config/ (current directory)
+#   5. <exe_dir>/config/ (executable directory)
+
+# ============================================================================
+# General Settings
+# ============================================================================
+[general]
+# Display language ("en" or "ja" - requires restart to apply)
+language = "en"
+
+# UI theme (currently only "classic" is available)
+theme = "classic"
+
+# Minimize to system tray (not yet implemented)
+minimize_to_tray = false
+
+# Start minimized (not yet implemented)
+start_minimized = false
+
+
+# ============================================================================
+# Download Settings
+# ============================================================================
+[download]
+# Default download directory
+# Windows example: 'C:\Users\YourName\Downloads'
+# Linux/macOS example: '/home/username/Downloads'
+default_directory = 'C:\Downloads'
+
+# Maximum concurrent downloads (application-wide)
+max_concurrent = 3
+
+# Maximum concurrent downloads per folder
+max_concurrent_per_folder = 2
+
+# Number of folders to process in parallel
+parallel_folder_count = 1
+
+# Retry count for failed downloads
+retry_count = 3
+
+# Retry delay in seconds
+retry_delay = 5
+
+# Maximum number of HTTP redirects to follow
+max_redirects = 5
+
+# User agent string for HTTP requests
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# Bandwidth limit in bytes per second (0 = unlimited)
+bandwidth_limit = 0
+
+
+# ============================================================================
+# Network Settings
+# ============================================================================
+[network]
+# Enable proxy
+proxy_enabled = false
+
+# Proxy type ("http" or "socks5")
+proxy_type = "http"
+
+# Proxy host
+proxy_host = ""
+
+# Proxy port
+proxy_port = 8080
+
+# Enable proxy authentication
+proxy_auth = false
+
+# Proxy username (only used if proxy_auth = true)
+proxy_user = ""
+
+# Proxy password (only used if proxy_auth = true)
+proxy_pass = ""
+
+
+# ============================================================================
+# Script Settings
+# ============================================================================
+[scripts]
+# Enable JavaScript hook scripts
+enabled = true
+
+# Script directory path (relative or absolute)
+# Default: <config_dir>/scripts (resolved at runtime)
+directory = "./scripts"
+
+# Script execution timeout in seconds
+timeout = 30
+
+# Per-script enable/disable settings
+# Add script filenames here to enable/disable them individually
+[scripts.script_files]
+# Example: Enable specific scripts
+# "01_twitter.js" = true
+# "02_pixiv.js" = false
+
+
+# ============================================================================
+# Folder-Specific Settings
+# ============================================================================
+# To create folder-specific settings, create a file at:
+#   config/<folder_name>/settings.toml
+#
+# Folder settings can override application settings. Example:
+#
+# [folder]
+# save_path = 'D:\Downloads\Anime'
+# auto_date_directory = true
+# scripts_enabled = true
+# max_concurrent = 5
+# user_agent = "CustomAgent/1.0"
+#
+# [folder.default_headers]
+# Referer = "https://example.com"
+# Authorization = "Bearer token123"
+#
+# [folder.script_files]
+# "anime_downloader.js" = true

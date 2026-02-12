@@ -1,0 +1,52 @@
+# Settings screen strings - English
+# Labels and descriptions for settings
+
+# Application Settings Fields
+settings-app-max-concurrent = Max Concurrent Downloads
+settings-app-max-concurrent-desc = Application-wide concurrent download limit
+settings-app-max-concurrent-per-folder = Max Concurrent Per Folder
+settings-app-max-concurrent-per-folder-desc = Default concurrent downloads per folder
+settings-app-max-active-folders = Max Active Folders
+settings-app-max-active-folders-desc = Maximum folders active simultaneously
+settings-app-max-redirects = Max Redirects
+settings-app-max-redirects-desc = Maximum number of HTTP redirects to follow
+settings-app-retry-count = Retry Count
+settings-app-retry-count-desc = Number of retry attempts on download failure
+settings-app-scripts-enabled = Scripts Enabled
+settings-app-scripts-enabled-desc = Enable/disable JavaScript script hooks
+settings-app-language = Language
+settings-app-language-desc = UI language (requires restart to apply)
+settings-app-skip-download-preview = Skip Download Preview
+settings-app-skip-download-preview-desc = Skip preview dialog and add downloads immediately
+
+# Folder Settings Fields
+settings-folder-save-path = Save Path
+settings-folder-auto-date = Auto-Date Directory
+settings-folder-scripts = Scripts
+settings-folder-max-concurrent = Max Concurrent
+settings-folder-user-agent = User Agent
+settings-folder-headers = Headers
+
+# Context Menu Actions
+context-menu-start-pause = Start/Pause Download
+context-menu-retry = Retry Failed Download
+context-menu-delete = Delete Download
+context-menu-change-folder = Change Folder
+context-menu-change-save-path = Change Save Path
+context-menu-copy-url = Copy URL
+context-menu-open-folder = Open Download Folder
+context-menu-cancel = Cancel
+
+# Settings UI Labels
+settings-value-enabled = Enabled
+settings-value-disabled = Disabled
+settings-value-not-set = Not set
+settings-value-inherit = Inherit from app
+settings-value-enabled-override = Enabled (override)
+settings-value-disabled-override = Disabled (override)
+
+# Settings Screen Sections
+settings-section-application = Application Settings
+settings-section-folders = Folder Settings
+settings-new-folder = New Folder
+settings-no-folders = No folders configured
