@@ -120,34 +120,6 @@ impl ApplicationSettingsField {
         ]
     }
 
-    pub fn label(&self) -> &str {
-        match self {
-            Self::MaxConcurrent => "Max Concurrent Downloads",
-            Self::MaxConcurrentPerFolder => "Max Concurrent Per Folder",
-            Self::MaxActiveFolders => "Max Active Folders",
-            Self::MaxRedirects => "Max Redirects",
-            Self::RetryCount => "Retry Count",
-            Self::ScriptsEnabled => "Scripts Enabled",
-            Self::SkipDownloadPreview => "Skip Download Preview",
-            Self::Language => "Language",
-            Self::AutoLaunchDnd => "Auto Launch ggg-dnd",
-        }
-    }
-
-    pub fn description(&self) -> &str {
-        match self {
-            Self::MaxConcurrent => "Application-wide concurrent download limit",
-            Self::MaxConcurrentPerFolder => "Default concurrent downloads per folder",
-            Self::MaxActiveFolders => "Maximum folders active simultaneously",
-            Self::MaxRedirects => "Maximum number of HTTP redirects to follow",
-            Self::RetryCount => "Number of retry attempts on download failure",
-            Self::ScriptsEnabled => "Enable/disable JavaScript script hooks",
-            Self::SkipDownloadPreview => "Skip preview dialog and add downloads immediately",
-            Self::Language => "UI language (requires restart to apply)",
-            Self::AutoLaunchDnd => "Auto-launch ggg-dnd drag & drop helper on startup (Windows)",
-        }
-    }
-
     /// Get translation key for label
     pub fn label_key(&self) -> &str {
         match self {
@@ -191,6 +163,34 @@ pub enum SettingsField {
     FolderHeaders,
 }
 
+impl SettingsField {
+    /// Get translation key for label
+    pub fn label_key(&self) -> &str {
+        match self {
+            Self::FolderSavePath => "settings-folder-save-path",
+            Self::FolderAutoDate => "settings-folder-auto-date",
+            Self::FolderAutoStart => "settings-folder-auto-start",
+            Self::FolderScripts => "settings-folder-scripts",
+            Self::FolderMaxConcurrent => "settings-folder-max-concurrent",
+            Self::FolderUserAgent => "settings-folder-user-agent",
+            Self::FolderHeaders => "settings-folder-headers",
+        }
+    }
+
+    /// Get translation key for description
+    pub fn description_key(&self) -> &str {
+        match self {
+            Self::FolderSavePath => "settings-folder-save-path-desc",
+            Self::FolderAutoDate => "settings-folder-auto-date-desc",
+            Self::FolderAutoStart => "settings-folder-auto-start-desc",
+            Self::FolderScripts => "settings-folder-scripts-desc",
+            Self::FolderMaxConcurrent => "settings-folder-max-concurrent-desc",
+            Self::FolderUserAgent => "settings-folder-user-agent-desc",
+            Self::FolderHeaders => "settings-folder-headers-desc",
+        }
+    }
+}
+
 /// Context menu actions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextMenuAction {
@@ -217,20 +217,6 @@ impl ContextMenuAction {
             Self::OpenFolder,
             Self::Cancel,
         ]
-    }
-
-    /// Get display label for menu item
-    pub fn label(&self) -> &str {
-        match self {
-            Self::StartPause => "Start/Pause Download",
-            Self::Retry => "Retry Failed Download",
-            Self::Delete => "Delete Download",
-            Self::ChangeFolder => "Change Folder",
-            Self::ChangeSavePath => "Change Save Path",
-            Self::CopyUrl => "Copy URL",
-            Self::OpenFolder => "Open Download Folder",
-            Self::Cancel => "Cancel",
-        }
     }
 
     /// Get translation key for label

@@ -2234,7 +2234,7 @@ impl TuiApp {
         // Enter input mode with appropriate title and prompt
         self.state.is_editing_app_setting = true;
         let args = fluent::fluent_args! {
-            "label" => field.label(),
+            "label" => self.state.t(field.label_key()),
         };
         self.state.input_title = self.state.t_with_args("dialog-edit-label", Some(&args));
         self.state.input_prompt = self.state.t("prompt-value");

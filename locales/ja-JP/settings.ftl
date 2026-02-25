@@ -23,11 +23,19 @@ settings-app-auto-launch-dnd-desc = 起動時にドラッグ＆ドロップ補�
 
 # Folder Settings Fields
 settings-folder-save-path = 保存パス
+settings-folder-save-path-desc = ダウンロードファイルの保存先ディレクトリ
 settings-folder-auto-date = 日付ディレクトリ自動作成
+settings-folder-auto-date-desc = 日付ベースのサブディレクトリを自動作成
+settings-folder-auto-start = ダウンロード自動開始
+settings-folder-auto-start-desc = このフォルダに追加されたダウンロードを自動的に開始
 settings-folder-scripts = スクリプト
+settings-folder-scripts-desc = このフォルダのスクリプトフック上書き設定
 settings-folder-max-concurrent = 最大同時数
+settings-folder-max-concurrent-desc = このフォルダの同時ダウンロード数の上限
 settings-folder-user-agent = ユーザーエージェント
+settings-folder-user-agent-desc = このフォルダ用のカスタムUser-Agentヘッダー
 settings-folder-headers = ヘッダー
+settings-folder-headers-desc = このフォルダ用のカスタムHTTPヘッダー
 
 # Context Menu Actions
 context-menu-start-pause = ダウンロードの開始/停止

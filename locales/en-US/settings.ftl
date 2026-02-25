@@ -23,11 +23,19 @@ settings-app-auto-launch-dnd-desc = Auto-launch ggg-dnd drag & drop helper on st
 
 # Folder Settings Fields
 settings-folder-save-path = Save Path
+settings-folder-save-path-desc = Directory where downloaded files are saved
 settings-folder-auto-date = Auto-Date Directory
+settings-folder-auto-date-desc = Automatically create date-based subdirectories
+settings-folder-auto-start = Auto-Start Downloads
+settings-folder-auto-start-desc = Automatically start downloads when added to this folder
 settings-folder-scripts = Scripts
+settings-folder-scripts-desc = Script hook override for this folder
 settings-folder-max-concurrent = Max Concurrent
+settings-folder-max-concurrent-desc = Concurrent download limit for this folder
 settings-folder-user-agent = User Agent
+settings-folder-user-agent-desc = Custom User-Agent header for this folder
 settings-folder-headers = Headers
+settings-folder-headers-desc = Custom HTTP headers for this folder
 
 # Context Menu Actions
 context-menu-start-pause = Start/Pause Download

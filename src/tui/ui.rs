@@ -1273,56 +1273,56 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
                 // Field 0: Save Path
                 detail_lines.push(make_field_line(
                     0,
-                    "Save Path",
+                    &app.state.t("settings-folder-save-path"),
                     folder_config.save_path.display().to_string(),
                 ));
 
                 // Field 1: Auto-Date Directory
                 let auto_date_str = if folder_config.auto_date_directory {
-                    "Enabled"
+                    app.state.t("settings-value-enabled")
                 } else {
-                    "Disabled"
+                    app.state.t("settings-value-disabled")
                 };
-                detail_lines.push(make_field_line(1, "Auto-Date Directory", auto_date_str.to_string()));
+                detail_lines.push(make_field_line(1, &app.state.t("settings-folder-auto-date"), auto_date_str));
 
                 // Field 2: Auto-Start Downloads
                 let auto_start_str = if folder_config.auto_start_downloads {
-                    "Enabled"
+                    app.state.t("settings-value-enabled")
                 } else {
-                    "Disabled"
+                    app.state.t("settings-value-disabled")
                 };
-                detail_lines.push(make_field_line(2, "Auto-Start Downloads", auto_start_str.to_string()));
+                detail_lines.push(make_field_line(2, &app.state.t("settings-folder-auto-start"), auto_start_str));
 
                 // Field 3: Scripts
                 let scripts_status = match folder_config.scripts_enabled {
-                    Some(true) => "Enabled (override)",
-                    Some(false) => "Disabled (override)",
-                    None => "Inherit from app",
+                    Some(true) => app.state.t("settings-value-enabled-override"),
+                    Some(false) => app.state.t("settings-value-disabled-override"),
+                    None => app.state.t("settings-value-inherit"),
                 };
-                detail_lines.push(make_field_line(3, "Scripts", scripts_status.to_string()));
+                detail_lines.push(make_field_line(3, &app.state.t("settings-folder-scripts"), scripts_status));
 
                 // Field 4: Max Concurrent
                 let max_concurrent_str = folder_config
                     .max_concurrent
                     .map(|n| n.to_string())
-                    .unwrap_or_else(|| "Inherit from app".to_string());
-                detail_lines.push(make_field_line(4, "Max Concurrent", max_concurrent_str));
+                    .unwrap_or_else(|| app.state.t("settings-value-inherit"));
+                detail_lines.push(make_field_line(4, &app.state.t("settings-folder-max-concurrent"), max_concurrent_str));
 
                 // Field 5: User Agent
                 let user_agent_str = folder_config
                     .user_agent
                     .as_ref()
                     .map(|s| s.clone())
-                    .unwrap_or_else(|| "Inherit from app".to_string());
-                detail_lines.push(make_field_line(5, "User Agent", user_agent_str));
+                    .unwrap_or_else(|| app.state.t("settings-value-inherit"));
+                detail_lines.push(make_field_line(5, &app.state.t("settings-folder-user-agent"), user_agent_str));
 
                 // Field 6: Headers
                 let headers_str = if folder_config.default_headers.is_empty() {
-                    "None".to_string()
+                    app.state.t("settings-value-not-set")
                 } else {
                     format!("{} headers", folder_config.default_headers.len())
                 };
-                detail_lines.push(make_field_line(6, "Headers", headers_str));
+                detail_lines.push(make_field_line(6, &app.state.t("settings-folder-headers"), headers_str));
 
                 // Show headers details if not empty
                 if !folder_config.default_headers.is_empty() {
@@ -1515,8 +1515,6 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
 
 /// Render input dialog for editing a field
 fn render_field_edit_dialog(app: &TuiApp, f: &mut Frame, area: Rect, field: super::state::SettingsField) {
-    use super::state::SettingsField;
-
     let dialog_width = 60;
     let dialog_height = 5;
 
@@ -1527,18 +1525,16 @@ fn render_field_edit_dialog(app: &TuiApp, f: &mut Frame, area: Rect, field: supe
         height: dialog_height,
     };
 
-    let label = match field {
-        SettingsField::FolderSavePath => "Save Path",
-        SettingsField::FolderMaxConcurrent => "Max Concurrent (leave empty to inherit)",
-        SettingsField::FolderUserAgent => "User Agent (leave empty to inherit)",
-        _ => "Edit Field",
+    let args = fluent::fluent_args! {
+        "label" => app.state.t(field.label_key()),
     };
+    let title = app.state.t_with_args("dialog-edit-label", Some(&args));
 
     let input_widget = Paragraph::new(app.state.input_buffer.as_str())
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!("Edit {}", label))
+                .title(title)
                 .style(Style::default().fg(Color::Yellow)),
         )
         .style(Style::default().fg(Color::White));
@@ -2151,7 +2147,7 @@ fn render_context_menu(app: &TuiApp, f: &mut Frame, area: Rect) {
     // Calculate menu dimensions
     let max_label_width = menu_items
         .iter()
-        .map(|item| item.label().len() + item.key_hint().len() + 6) // +6 for spacing and brackets
+        .map(|item| app.state.t(item.label_key()).len() + item.key_hint().len() + 6) // +6 for spacing and brackets
         .max()
         .unwrap_or(40);
 
@@ -2183,7 +2179,7 @@ fn render_context_menu(app: &TuiApp, f: &mut Frame, area: Rect) {
 
         menu_lines.push(Line::from(vec![
             Span::styled(prefix, style),
-            Span::styled(action.label(), style),
+            Span::styled(app.state.t(action.label_key()), style),
             Span::raw("  "),
             Span::styled(format!("[{}]", action.key_hint()), key_hint_style),
         ]));
