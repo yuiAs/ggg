@@ -7,4 +7,7 @@ pub enum TuiEvent {
     Input(CrosstermEvent),
     /// Tick event for periodic updates
     Tick,
+    /// URL received via IPC Named Pipe from ggg-dnd GUI
+    #[cfg(windows)]
+    IpcUrl(String),
 }

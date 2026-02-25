@@ -91,6 +91,26 @@ cargo build --release
 cargo check
 ```
 
+## ggg-dnd (Windows only)
+
+`ggg-dnd` is a lightweight Win32 GUI helper that accepts browser drag & drop and forwards URLs to the TUI via Named Pipes. This works around Windows Terminal's limited drag & drop support.
+
+- Entire window is an OLE drop target — drag a URL from your browser onto it
+- Communicates with `ggg` over Named Pipe (`\\.\pipe\ggg-dnd`)
+- Can be auto-launched from `ggg` via the `Auto Launch ggg-dnd` setting
+
+### Building
+
+```bash
+# Build ggg-dnd only
+cargo build -p ggg-dnd --release
+
+# Build both ggg and ggg-dnd
+cargo build --release
+```
+
+The binary will be at `target/release/ggg-dnd.exe`. Place it in the same directory as `ggg.exe` for auto-launch to work.
+
 ## Known Issues
 
 ### Platform-Specific

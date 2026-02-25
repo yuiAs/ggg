@@ -18,6 +18,8 @@ settings-app-language = 言語
 settings-app-language-desc = UI言語（適用には再起動が必要）
 settings-app-skip-download-preview = ダウンロードプレビューをスキップ
 settings-app-skip-download-preview-desc = プレビューダイアログをスキップして即座にダウンロードを追加
+settings-app-auto-launch-dnd = ggg-dnd 自動起動
+settings-app-auto-launch-dnd-desc = 起動時にドラッグ＆ドロップ補助ツール ggg-dnd を自動起動（Windows専用）
 
 # Folder Settings Fields
 settings-folder-save-path = 保存パス

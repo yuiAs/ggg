@@ -2,6 +2,7 @@ pub mod app;
 pub mod cli;
 pub mod download;
 pub mod file;
+pub mod ipc;
 pub mod script; // Phase 3 - in progress
 pub mod tui;
 pub mod ui;

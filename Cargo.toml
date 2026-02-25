@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "windows/ggg-dnd"]
+resolver = "2"
+
 [package]
 name = "ggg"
 version = "0.1.0"
@@ -74,7 +78,7 @@ tempfile = "3.8"
 serial_test = "3.2.0"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_Shell"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_System_Threading"] }
 
 [profile.release]
 lto = true

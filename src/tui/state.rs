@@ -102,6 +102,7 @@ pub enum ApplicationSettingsField {
     ScriptsEnabled,
     SkipDownloadPreview,
     Language,
+    AutoLaunchDnd,
 }
 
 impl ApplicationSettingsField {
@@ -115,6 +116,7 @@ impl ApplicationSettingsField {
             Self::ScriptsEnabled,
             Self::SkipDownloadPreview,
             Self::Language,
+            Self::AutoLaunchDnd,
         ]
     }
 
@@ -128,6 +130,7 @@ impl ApplicationSettingsField {
             Self::ScriptsEnabled => "Scripts Enabled",
             Self::SkipDownloadPreview => "Skip Download Preview",
             Self::Language => "Language",
+            Self::AutoLaunchDnd => "Auto Launch ggg-dnd",
         }
     }
 
@@ -141,6 +144,7 @@ impl ApplicationSettingsField {
             Self::ScriptsEnabled => "Enable/disable JavaScript script hooks",
             Self::SkipDownloadPreview => "Skip preview dialog and add downloads immediately",
             Self::Language => "UI language (requires restart to apply)",
+            Self::AutoLaunchDnd => "Auto-launch ggg-dnd drag & drop helper on startup (Windows)",
         }
     }
 
@@ -155,6 +159,7 @@ impl ApplicationSettingsField {
             Self::ScriptsEnabled => "settings-app-scripts-enabled",
             Self::SkipDownloadPreview => "settings-app-skip-download-preview",
             Self::Language => "settings-app-language",
+            Self::AutoLaunchDnd => "settings-app-auto-launch-dnd",
         }
     }
 
@@ -169,6 +174,7 @@ impl ApplicationSettingsField {
             Self::ScriptsEnabled => "settings-app-scripts-enabled-desc",
             Self::SkipDownloadPreview => "settings-app-skip-download-preview-desc",
             Self::Language => "settings-app-language-desc",
+            Self::AutoLaunchDnd => "settings-app-auto-launch-dnd-desc",
         }
     }
 }
@@ -436,6 +442,10 @@ pub struct TuiState {
 
     /// Keyboard shortcut resolver
     pub keybinding_resolver: crate::app::keybindings::KeybindingResolver,
+
+    /// IPC Named Pipe name (Windows only, set when pipe server starts)
+    #[cfg(windows)]
+    pub ipc_pipe_name: Option<String>,
 }
 
 /// Cache for filtered downloads (legacy - kept for API compatibility)
@@ -506,6 +516,8 @@ impl TuiState {
             folder_context_menu_index: 0,
             filtered_cache: RefCell::new(FilterCache::default()),
             keybinding_resolver,
+            #[cfg(windows)]
+            ipc_pipe_name: None,
         }
     }
 

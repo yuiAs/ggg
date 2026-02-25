@@ -35,6 +35,9 @@ pub struct GeneralConfig {
     pub start_minimized: bool,
     #[serde(default = "default_skip_download_preview")]
     pub skip_download_preview: bool,
+    /// Auto-launch ggg-dnd GUI on startup (Windows only)
+    #[serde(default)]
+    pub auto_launch_dnd: bool,
 }
 
 fn default_skip_download_preview() -> bool {
@@ -126,6 +129,7 @@ impl Default for Config {
                 minimize_to_tray: true,
                 start_minimized: false,
                 skip_download_preview: true,
+                auto_launch_dnd: false,
             },
             download: DownloadConfig {
                 default_directory: crate::util::paths::resolve_default_download_directory(),
@@ -263,6 +267,7 @@ impl Config {
                     minimize_to_tray: true,
                     start_minimized: false,
                     skip_download_preview: true,
+                    auto_launch_dnd: false,
                 },
                 download: DownloadConfig {
                     default_directory: crate::util::paths::resolve_default_download_directory(),
@@ -625,6 +630,7 @@ timeout = 60
                 minimize_to_tray: false,
                 start_minimized: true,
                 skip_download_preview: true,
+                auto_launch_dnd: false,
             },
             download: DownloadConfig {
                 default_directory: PathBuf::from("C:\\Downloads"),
@@ -739,7 +745,7 @@ timeout = 60
 
         // Use config dir override instead of CWD change
         crate::util::paths::set_config_dir_override(Some(config_dir.clone()));
-        std::env::set_var("GGG_TEST_MODE", "1");
+        unsafe { std::env::set_var("GGG_TEST_MODE", "1") };
 
         // Folders WITH settings.toml (should be recognized)
         std::fs::create_dir_all(config_dir.join("folder1")).unwrap();
@@ -774,7 +780,7 @@ auto_start_downloads = false
 
         // Clean up
         crate::util::paths::set_config_dir_override(None);
-        std::env::remove_var("GGG_TEST_MODE");
+        unsafe { std::env::remove_var("GGG_TEST_MODE") };
 
         // Only directories with settings.toml should be loaded
         assert_eq!(folders.len(), 2);

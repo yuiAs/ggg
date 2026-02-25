@@ -702,7 +702,7 @@ fn render_help(app: &TuiApp, f: &mut Frame, area: Rect) {
         height: dialog_height.min(area.height),
     };
 
-    let help_text = vec![
+    let mut help_text = vec![
         Line::from(Span::styled(
             t("help-title"),
             Style::default()
@@ -755,11 +755,23 @@ fn render_help(app: &TuiApp, f: &mut Frame, area: Rect) {
         Line::from(Span::styled(t("help-section-system"), Style::default().add_modifier(Modifier::BOLD))),
         Line::from(format!("  {}", t("help-key-quit"))),
         Line::from(""),
-        Line::from(Span::styled(
-            t("help-footer"),
-            Style::default().fg(Color::Green),
-        )),
     ];
+
+    // Show IPC pipe name on Windows
+    #[cfg(windows)]
+    if let Some(ref pipe_name) = app.state.ipc_pipe_name {
+        help_text.push(Line::from(Span::styled(
+            "IPC",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        help_text.push(Line::from(format!("  Pipe: {}", pipe_name)));
+        help_text.push(Line::from(""));
+    }
+
+    help_text.push(Line::from(Span::styled(
+        t("help-footer"),
+        Style::default().fg(Color::Green),
+    )));
 
     let paragraph = Paragraph::new(help_text)
         .block(
@@ -936,6 +948,13 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
                 }
                 ApplicationSettingsField::Language => {
                     config.general.language.clone()
+                }
+                ApplicationSettingsField::AutoLaunchDnd => {
+                    if config.general.auto_launch_dnd {
+                        app.state.t("settings-value-enabled")
+                    } else {
+                        app.state.t("settings-value-disabled")
+                    }
                 }
             };
 

@@ -24,6 +24,7 @@ pub enum Command {
     UpdateRetryCount { value: u32 },
     UpdateScriptsEnabled { value: bool },
     UpdateSkipDownloadPreview { value: bool },
+    UpdateAutoLaunchDnd { value: bool },
     UpdateLanguage { value: String },
 
     // Folder-level settings
@@ -299,6 +300,22 @@ pub async fn handle_command(
         Command::UpdateSkipDownloadPreview { value } => {
             let mut config = state.config.write().await;
             config.general.skip_download_preview = value;
+
+            // Save to disk
+            if let Err(e) = config.save() {
+                return CommandResponse::Error {
+                    error: state.t_with_args("cmd-error-save-config",
+                        Some(&fluent_args!["error" => e.to_string()])),
+                };
+            }
+
+            CommandResponse::Success {
+                data: serde_json::json!({"status": "ok", "value": value}),
+            }
+        }
+        Command::UpdateAutoLaunchDnd { value } => {
+            let mut config = state.config.write().await;
+            config.general.auto_launch_dnd = value;
 
             // Save to disk
             if let Err(e) = config.save() {

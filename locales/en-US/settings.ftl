@@ -18,6 +18,8 @@ settings-app-language = Language
 settings-app-language-desc = UI language (requires restart to apply)
 settings-app-skip-download-preview = Skip Download Preview
 settings-app-skip-download-preview-desc = Skip preview dialog and add downloads immediately
+settings-app-auto-launch-dnd = Auto Launch ggg-dnd
+settings-app-auto-launch-dnd-desc = Auto-launch ggg-dnd drag & drop helper on startup (Windows only)
 
 # Folder Settings Fields
 settings-folder-save-path = Save Path

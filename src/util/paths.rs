@@ -193,8 +193,8 @@ mod tests {
     // Helper function to ensure clean test state
     fn reset_test_state() {
         set_config_dir_override(None);
-        std::env::remove_var("GGG_TEST_MODE");
-        std::env::remove_var("GGG_CONFIG_DIR");
+        unsafe { std::env::remove_var("GGG_TEST_MODE") };
+        unsafe { std::env::remove_var("GGG_CONFIG_DIR") };
     }
 
     #[test]
@@ -207,14 +207,14 @@ mod tests {
 
         // Set override for test
         set_config_dir_override(Some(config_dir.clone()));
-        std::env::set_var("GGG_TEST_MODE", "1");
+        unsafe { std::env::set_var("GGG_TEST_MODE", "1") };
 
         let path = get_app_config_path().unwrap();
         assert_eq!(path, config_dir.join("settings.toml"));
 
         // Clean up
         set_config_dir_override(None);
-        std::env::remove_var("GGG_TEST_MODE");
+        unsafe { std::env::remove_var("GGG_TEST_MODE") };
     }
 
     #[test]
@@ -225,7 +225,7 @@ mod tests {
         let config_dir = temp_dir.path().to_path_buf();
 
         set_config_dir_override(Some(config_dir.clone()));
-        std::env::set_var("GGG_TEST_MODE", "1");
+        unsafe { std::env::set_var("GGG_TEST_MODE", "1") };
 
         let path = get_folder_config_path("test_folder").unwrap();
         assert_eq!(path, config_dir.join("test_folder").join("settings.toml"));
@@ -239,7 +239,7 @@ mod tests {
         let config_dir = temp_dir.path().to_path_buf();
 
         set_config_dir_override(Some(config_dir.clone()));
-        std::env::set_var("GGG_TEST_MODE", "1");
+        unsafe { std::env::set_var("GGG_TEST_MODE", "1") };
 
         let path = get_folder_config_path("folder-with-dash").unwrap();
         assert!(path.to_str().unwrap().contains("folder-with-dash"));
@@ -263,7 +263,7 @@ mod tests {
         let config_dir = temp_dir.path().to_path_buf();
 
         set_config_dir_override(Some(config_dir.clone()));
-        std::env::set_var("GGG_TEST_MODE", "1");
+        unsafe { std::env::set_var("GGG_TEST_MODE", "1") };
 
         let found_dir = find_config_directory().unwrap();
         assert_eq!(found_dir, config_dir);
@@ -278,7 +278,7 @@ mod tests {
         let config_dir = temp_dir.path().to_path_buf();
         fs::create_dir_all(&config_dir).unwrap();
 
-        std::env::set_var("GGG_CONFIG_DIR", config_dir.to_str().unwrap());
+        unsafe { std::env::set_var("GGG_CONFIG_DIR", config_dir.to_str().unwrap()) };
 
         let found_dir = find_config_directory().unwrap();
         assert_eq!(found_dir, config_dir);
@@ -357,7 +357,7 @@ mod tests {
         let config_dir = temp_dir.path().to_path_buf();
 
         set_config_dir_override(Some(config_dir.clone()));
-        std::env::set_var("GGG_TEST_MODE", "1");
+        unsafe { std::env::set_var("GGG_TEST_MODE", "1") };
 
         let app_path = get_app_config_path().unwrap();
         let folder_path = get_folder_config_path("test").unwrap();

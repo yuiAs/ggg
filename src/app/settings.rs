@@ -230,6 +230,7 @@ mod tests {
                 minimize_to_tray: false,
                 start_minimized: false,
                 skip_download_preview: true,
+                auto_launch_dnd: false,
             },
             download: DownloadConfig {
                 default_directory: PathBuf::from("C:\\Downloads"),

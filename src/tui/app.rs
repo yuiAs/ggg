@@ -97,6 +97,15 @@ impl TuiApp {
                 self.last_update_time = std::time::Instant::now();
                 self.state.mark_dirty();  // Mark for redraw after input handling
             }
+            #[cfg(windows)]
+            TuiEvent::IpcUrl(url) => {
+                tracing::info!("IPC URL received from ggg-dnd: {}", url);
+                if let Err(e) = self.add_download_from_paste(&url).await {
+                    tracing::error!("Failed to add download from IPC: {}", e);
+                }
+                self.state.update_downloads(&self.manager).await;
+                self.state.mark_dirty();
+            }
         }
         Ok(())
     }
@@ -1540,6 +1549,26 @@ impl TuiApp {
         Ok(())
     }
 
+    /// Toggle auto-launch ggg-dnd at application level
+    async fn toggle_app_auto_launch_dnd(&mut self) -> Result<()> {
+        use crate::ui::commands::{Command, handle_command};
+
+        let config = self.state.app_state.config.write().await;
+        let new_value = !config.general.auto_launch_dnd;
+        drop(config);
+
+        let command = Command::UpdateAutoLaunchDnd { value: new_value };
+        handle_command(
+            command,
+            self.state.app_state.clone(),
+            self.manager.clone(),
+        )
+        .await;
+
+        tracing::info!("Toggled auto launch dnd to {}", new_value);
+        Ok(())
+    }
+
     /// Populate input buffer with current value for the field
     async fn populate_input_buffer_for_field(&mut self, field: super::state::SettingsField) {
         use super::state::SettingsField;
@@ -2154,6 +2183,11 @@ impl TuiApp {
                 self.toggle_app_skip_download_preview().await?;
                 return Ok(());
             }
+            ApplicationSettingsField::AutoLaunchDnd => {
+                // Toggle boolean directly
+                self.toggle_app_auto_launch_dnd().await?;
+                return Ok(());
+            }
             _ => {
                 // Continue with normal text input for other fields
             }
@@ -2189,7 +2223,7 @@ impl TuiApp {
             ApplicationSettingsField::Language => {
                 config.general.language.clone()
             }
-            ApplicationSettingsField::ScriptsEnabled | ApplicationSettingsField::SkipDownloadPreview => {
+            ApplicationSettingsField::ScriptsEnabled | ApplicationSettingsField::SkipDownloadPreview | ApplicationSettingsField::AutoLaunchDnd => {
                 // These are handled above as toggles
                 unreachable!()
             }
@@ -2290,10 +2324,10 @@ impl TuiApp {
                     return Ok(());
                 }
             }
-            ApplicationSettingsField::ScriptsEnabled | ApplicationSettingsField::SkipDownloadPreview => {
+            ApplicationSettingsField::ScriptsEnabled | ApplicationSettingsField::SkipDownloadPreview | ApplicationSettingsField::AutoLaunchDnd => {
                 // These are now handled as toggles in start_app_settings_edit()
                 // This branch should never be reached
-                unreachable!("ScriptsEnabled and SkipDownloadPreview are now toggle fields")
+                unreachable!("Toggle fields are handled in start_app_settings_edit()")
             }
             ApplicationSettingsField::Language => {
                 let value = value_str.to_lowercase();
@@ -2465,6 +2499,39 @@ pub async fn run_tui(
         }
     });
 
+    // Spawn IPC Named Pipe server (Windows only)
+    #[cfg(windows)]
+    {
+        let ipc_tx = tx.clone();
+        let (ipc_event_tx, mut ipc_event_rx) = mpsc::channel(32);
+        let (pipe_name, _ipc_handle) =
+            crate::ipc::pipe_server::start_pipe_server(ipc_event_tx);
+        tracing::info!("IPC pipe server started: {}", pipe_name);
+        app.state.ipc_pipe_name = Some(pipe_name.clone());
+
+        // Bridge IPC events into TUI event channel
+        tokio::spawn(async move {
+            while let Some(ipc_event) = ipc_event_rx.recv().await {
+                match ipc_event {
+                    crate::ipc::pipe_server::IpcEvent::UrlReceived(url) => {
+                        if ipc_tx.send(TuiEvent::IpcUrl(url)).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        // Auto-launch ggg-dnd if configured and not already running
+        {
+            let config = app.state.app_state.config.read().await;
+            if config.general.auto_launch_dnd {
+                drop(config);
+                auto_launch_ggg_dnd(&pipe_name);
+            }
+        }
+    }
+
     // Track whether mouse capture is currently active
     let mut mouse_captured = true;
 
@@ -2508,6 +2575,50 @@ pub async fn run_tui(
     app.save_queue().await?;
 
     Ok(())
+}
+
+/// Auto-launch ggg-dnd.exe if not already running (detected via Named Mutex).
+#[cfg(windows)]
+fn auto_launch_ggg_dnd(pipe_name: &str) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::OpenMutexW;
+
+    // Check if ggg-dnd is already running via Named Mutex
+    let already_running = unsafe {
+        match OpenMutexW(
+            windows::Win32::System::Threading::MUTEX_ALL_ACCESS,
+            false,
+            windows::core::w!("Global\\ggg-dnd-running"),
+        ) {
+            Ok(handle) => {
+                let _ = CloseHandle(handle);
+                true
+            }
+            Err(_) => false,
+        }
+    };
+
+    if already_running {
+        tracing::info!("ggg-dnd is already running, skipping auto-launch");
+        return;
+    }
+
+    // Look for ggg-dnd.exe next to ggg.exe
+    let dnd_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("ggg-dnd.exe")));
+
+    match dnd_exe {
+        Some(exe_path) if exe_path.exists() => {
+            match std::process::Command::new(&exe_path).arg(pipe_name).spawn() {
+                Ok(_) => tracing::info!("Auto-launched ggg-dnd: {:?}", exe_path),
+                Err(e) => tracing::warn!("Failed to auto-launch ggg-dnd: {}", e),
+            }
+        }
+        _ => {
+            tracing::debug!("ggg-dnd.exe not found next to ggg.exe, skipping auto-launch");
+        }
+    }
 }
 
 #[cfg(test)]
