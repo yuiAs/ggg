@@ -2426,20 +2426,25 @@ impl TuiApp {
     async fn add_download_from_paste(&mut self, url: &str) -> Result<()> {
         let folder_id = self.state.current_folder_id.clone();
 
-        // Create download task (no URL expansion for paste/D&D)
-        let task = {
-            let config = self.state.app_state.config.read().await;
-            crate::download::task::DownloadTask::new_with_folder(
-                url.to_string(),
-                folder_id.clone(),
-                &config,
-            )
-        };
+        // Expand URL patterns (e.g., [001-010]) into multiple URLs
+        let urls = crate::util::url_expansion::expand_url(url);
+        let urls = if urls.is_empty() { vec![url.to_string()] } else { urls };
 
-        self.add_download_with_auto_start(task).await?;
+        for u in &urls {
+            let task = {
+                let config = self.state.app_state.config.read().await;
+                crate::download::task::DownloadTask::new_with_folder(
+                    u.clone(),
+                    folder_id.clone(),
+                    &config,
+                )
+            };
+            self.add_download_with_auto_start(task).await?;
+        }
 
         tracing::info!(
-            "Auto-added download from paste/D&D to folder '{}'",
+            "Auto-added {} download(s) from paste/D&D to folder '{}'",
+            urls.len(),
             folder_id
         );
 

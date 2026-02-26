@@ -9,8 +9,11 @@ use std::sync::OnceLock;
 use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::DataExchange::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Memory::*;
 use windows::Win32::System::Ole::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const WINDOW_WIDTH: i32 = 360;
@@ -120,6 +123,15 @@ unsafe extern "system" fn wnd_proc(
             }
             LRESULT(0)
         }
+        WM_KEYDOWN => {
+            // Ctrl+V: read clipboard and send URLs via IPC
+            let vk = (wparam.0 & 0xFFFF) as u16;
+            let ctrl_held = GetKeyState(VK_CONTROL.0 as i32) < 0;
+            if ctrl_held && vk == VK_V.0 {
+                handle_paste(hwnd);
+            }
+            LRESULT(0)
+        }
         WM_PAINT => {
             paint(hwnd);
             LRESULT(0)
@@ -180,7 +192,7 @@ unsafe fn paint(hwnd: HWND) {
 
     // Line 2: Pipe name
     SetTextColor(hdc, COLORREF(0x00808080)); // Gray
-    let pipe_label = format!("Pipe: {}", s.pipe_name);
+    let pipe_label = format!("⛓️‍💥 {}", s.pipe_name);
     let mut pipe_wide = to_wide(&pipe_label);
     let mut pipe_rect = RECT {
         left: rect.left + 12,
@@ -194,7 +206,7 @@ unsafe fn paint(hwnd: HWND) {
     SetTextColor(hdc, COLORREF(0x00333333)); // Dark gray
     let url_text = match &s.last_url {
         Some(url) => format!("{}", truncate_display(url, 45)),
-        None => "Drop a URL here from your browser".to_string(),
+        None => "💡 Drop a URL here from your browser".to_string(),
     };
     let mut url_wide = to_wide(&url_text);
     let mut url_rect = RECT {
@@ -222,6 +234,96 @@ unsafe fn paint(hwnd: HWND) {
 
     drop(s); // Release lock before EndPaint
     let _ = EndPaint(hwnd, &ps);
+}
+
+/// Handle Ctrl+V paste: read clipboard text and send URLs via IPC.
+unsafe fn handle_paste(hwnd: HWND) {
+    let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const SharedState;
+    if state_ptr.is_null() {
+        return;
+    }
+    let state = &*state_ptr;
+
+    // Check connection before opening clipboard
+    {
+        let s = state.lock().unwrap();
+        if !s.connected {
+            return;
+        }
+    }
+
+    // Read CF_UNICODETEXT from clipboard
+    let text = match read_clipboard_text(hwnd) {
+        Some(t) if !t.is_empty() => t,
+        _ => return,
+    };
+
+    // Parse lines: each line that starts with http(s):// is a URL candidate
+    let urls: Vec<&str> = text
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| line.starts_with("http://") || line.starts_with("https://"))
+        .collect();
+
+    if urls.is_empty() {
+        let mut s = state.lock().unwrap();
+        s.status_message = "⚠️ No URLs in clipboard".to_string();
+        let _ = InvalidateRect(Some(hwnd), None, true);
+        return;
+    }
+
+    let mut success_count = 0;
+    let mut last_err: Option<String> = None;
+
+    for url in &urls {
+        match crate::ipc_client::send_url(state, url) {
+            Ok(_) => success_count += 1,
+            Err(e) => last_err = Some(e),
+        }
+    }
+
+    // Update state with result
+    {
+        let mut s = state.lock().unwrap();
+        if success_count > 0 {
+            s.last_url = Some(urls.last().unwrap().to_string());
+        }
+        if let Some(err) = last_err {
+            s.status_message = format!("📋 ✅ {} ⚠️ {}", success_count, err);
+        } else if success_count == 1 {
+            s.status_message = "📋 ✅".to_string();
+        } else {
+            s.status_message = format!("📋 ✅ {}", success_count);
+        }
+    }
+
+    let _ = InvalidateRect(Some(hwnd), None, true);
+}
+
+/// Read text from the clipboard (CF_UNICODETEXT).
+unsafe fn read_clipboard_text(hwnd: HWND) -> Option<String> {
+    if !OpenClipboard(Some(hwnd)).is_ok() {
+        return None;
+    }
+
+    let result = (|| {
+        let handle = GetClipboardData(CF_UNICODETEXT.0 as u32).ok()?;
+        let ptr = GlobalLock(HGLOBAL(handle.0)) as *const u16;
+        if ptr.is_null() {
+            return None;
+        }
+        let mut len = 0;
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts(ptr, len);
+        let text = String::from_utf16_lossy(slice);
+        let _ = GlobalUnlock(HGLOBAL(handle.0));
+        Some(text)
+    })();
+
+    let _ = CloseClipboard();
+    result
 }
 
 /// Resolve the preferred UI font family.

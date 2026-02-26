@@ -25,7 +25,7 @@ impl AppState {
         Self {
             connected: false,
             last_url: None,
-            status_message: "Connecting...".to_string(),
+            status_message: "⌛️ Connecting...".to_string(),
             pipe_name,
         }
     }
