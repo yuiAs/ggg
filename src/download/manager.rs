@@ -309,6 +309,9 @@ impl DownloadManager {
             _ => {}
         }
 
+        // Resume only for interrupted tasks (Paused/Error), not for new downloads
+        let is_resuming = matches!(previous_status, DownloadStatus::Paused | DownloadStatus::Error);
+
         // Clone folder queue for the spawned task
         let queue = folder_queue.clone();
         let http_client = self.http_client.clone();
@@ -336,7 +339,7 @@ impl DownloadManager {
             // Retry loop
             loop {
                 // Clone Arc-wrapped types (cheap) and task for retry attempt
-                match Self::download_task(current_task.clone(), http_client.clone(), queue.clone(), script_sender.clone(), config.clone()).await {
+                match Self::download_task(current_task.clone(), http_client.clone(), queue.clone(), script_sender.clone(), config.clone(), is_resuming).await {
                     Ok(_) => {
                         // Download succeeded - record success for circuit breaker
                         if let Some(domain) = super::circuit_breaker::extract_domain(&task_url) {
@@ -459,6 +462,7 @@ impl DownloadManager {
         queue: FolderQueue,
         script_sender: Option<mpsc::Sender<ScriptRequest>>,
         config: Arc<tokio::sync::RwLock<crate::app::config::Config>>,
+        is_resuming: bool,
     ) -> Result<()> {
         // Compute effective script_files (Application + Folder override)
         let effective_script_files = Self::compute_effective_script_files(&config, &task.folder_id).await;
@@ -622,9 +626,9 @@ impl DownloadManager {
         // Ensure directory exists (handles auto-date subdirectories)
         tokio::fs::create_dir_all(&resolved_save_path).await?;
 
-        // Check if file exists for resume
-        let file_path = resolved_save_path.join(&task.filename);
-        let resume_from = if file_path.exists() && task.resume_supported {
+        // Resume: only for interrupted tasks (Paused/Error) with existing partial file
+        let mut file_path = resolved_save_path.join(&task.filename);
+        let resume_from = if is_resuming && file_path.exists() && task.resume_supported {
             Some(std::fs::metadata(&file_path)?.len())
         } else {
             None
@@ -635,6 +639,16 @@ impl DownloadManager {
             task.log_info(format!("Resuming download from {} bytes", offset));
             queue.update(task.clone()).await;
         } else {
+            // New download: ensure unique filename to avoid overwriting existing files
+            let unique_name = crate::file::naming::ensure_unique_filename(
+                &resolved_save_path, &task.filename,
+            );
+            if unique_name != task.filename {
+                task.log_info(format!("Filename conflict resolved: {} -> {}", task.filename, unique_name));
+                task.filename = unique_name;
+                file_path = resolved_save_path.join(&task.filename);
+                queue.update(task.clone()).await;
+            }
             task.log_info("Starting fresh download".to_string());
         }
 

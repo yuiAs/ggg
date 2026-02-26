@@ -195,14 +195,25 @@ impl HttpClient {
         let mut request = self.client.get(url).headers(headers.clone());
 
         // Add Range header for resume support
+        let mut actual_resume_from = resume_from;
         if let Some(offset) = resume_from {
             tracing::trace!("Adding Range header for resume: bytes={}-", offset);
             request = request.header(RANGE, format!("bytes={}-", offset));
         }
 
         tracing::trace!("Sending HTTP request to {}", url);
-        let response = request.send().await?;
+        let mut response = request.send().await?;
         tracing::trace!("Received response with status: {}", response.status());
+
+        // Fallback: if server returns 416 (Range Not Satisfiable) during resume,
+        // retry from scratch without Range header
+        if response.status().as_u16() == 416 && resume_from.is_some() {
+            tracing::warn!("Got 416 Range Not Satisfiable, retrying without Range header");
+            actual_resume_from = None;
+            let retry_request = self.client.get(url).headers(headers.clone());
+            response = retry_request.send().await?;
+            tracing::trace!("Retry response status: {}", response.status());
+        }
 
         // Check for auth requirement BEFORE generic error check
         let status = response.status().as_u16();
@@ -239,8 +250,8 @@ impl HttpClient {
         let content_type = parsed.content_type;
         let response_headers = parsed.all_headers;
 
-        // Open file for writing (append if resuming)
-        let file = if resume_from.is_some() {
+        // Open file for writing (append if resuming, fresh if fallback occurred)
+        let file = if actual_resume_from.is_some() {
             tokio::fs::OpenOptions::new()
                 .append(true)
                 .create(true)
@@ -256,7 +267,7 @@ impl HttpClient {
 
         // Stream the response body to file
         let mut stream = response.bytes_stream();
-        let mut downloaded = resume_from.unwrap_or(0);
+        let mut downloaded = actual_resume_from.unwrap_or(0);
         let mut last_progress_update = std::time::Instant::now();
         let mut last_progress_bytes = downloaded;
 
