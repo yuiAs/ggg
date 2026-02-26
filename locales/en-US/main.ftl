@@ -3,7 +3,7 @@
 
 # Header
 app-title = 📚 Great Grimoire Grabber
-app-version = v0.1.0 📥
+app-version = v{$version} 📥
 
 # 3-Pane Layout
 pane-folders = 📂 Folders

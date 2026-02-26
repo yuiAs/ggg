@@ -629,7 +629,10 @@ fn render_status_bar(app: &TuiApp, f: &mut Frame, area: Rect) {
                 t("status-normal-right")
             );
             // Version displayed on the right for main screen
-            let right = t("app-version");
+            let version_args = fluent_args! {
+                "version" => env!("CARGO_PKG_VERSION"),
+            };
+            let right = t_args("app-version", Some(&version_args));
             (left, right)
         }
         // For other screens, show hints on left, nothing on right
