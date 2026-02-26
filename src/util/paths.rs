@@ -151,30 +151,16 @@ pub fn resolve_relative_to_config(path: &Path) -> PathBuf {
     }
 }
 
-/// Find a resource directory by searching CWD and exe_dir.
+/// Get the platform-specific data directory for locale overrides.
 ///
-/// Useful for locating bundled resources (e.g. locales/) that ship
-/// alongside the binary rather than in the config directory.
-pub fn find_resource_directory(name: &str) -> Result<PathBuf> {
-    // 1. Current working directory
-    if let Ok(cwd) = std::env::current_dir() {
-        let cwd_path = cwd.join(name);
-        if cwd_path.exists() {
-            return Ok(cwd_path);
-        }
-    }
-
-    // 2. Executable directory
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            let exe_path = exe_dir.join(name);
-            if exe_path.exists() {
-                return Ok(exe_path);
-            }
-        }
-    }
-
-    anyhow::bail!("Resource directory not found: {}", name)
+/// Returns `<data_dir>/ggg/locales` where `<data_dir>` is:
+/// - Linux: `$XDG_DATA_HOME` or `~/.local/share`
+/// - macOS: `~/Library/Application Support`
+/// - Windows: `%APPDATA%`
+pub fn get_locale_data_dir() -> Result<PathBuf> {
+    let data_dir = dirs::data_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine user data directory"))?;
+    Ok(data_dir.join("ggg").join("locales"))
 }
 
 /// Get absolute path to application-wide logs directory
