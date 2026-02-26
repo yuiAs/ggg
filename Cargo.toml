@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "ggg"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["yuinshielAs"]
 description = "Great Grimoire Grabber - A classic-style download manager"
@@ -28,15 +28,13 @@ reqwest = { version = "0.13", features = ["stream", "cookies", "gzip", "brotli",
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 
-# JavaScript Engine - Phase 3
-# Using rustyscript 0.12.3 (latest) - attempting to resolve previous dependency conflicts
-rustyscript = { version = "0.12", features = ["web_stub", "fs_import"] }
+# JavaScript Engine (V8 via deno_core)
+deno_core = "0.381"
 
 # Serialization
-# Pinned: swc_config 3.0.0 / swc_common 9.2.0 use serde::__private (removed in serde >=1.0.222)
-serde = { version = "=1.0.219", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1.0"
 
 # File handling
 filetime = "0.2"

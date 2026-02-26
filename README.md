@@ -1,13 +1,13 @@
 # ggg
 
-A powerful terminal-based download manager with vim-style navigation, built in Rust.
+A terminal-based download manager, built in Rust.
 
 ## Features
 
 - **Core Download Engine** — HTTP/HTTPS streaming, resume (Range/ETag), concurrent downloads, automatic retry with exponential backoff, queue persistence
 - **Vim-Style TUI** — Keyboard-first interface inspired by vim/lazygit. Split view, tab-based filtering, inline editing, drag & drop URL detection
 - **Three-Tier Settings** — Application → Folder → Queue priority chain. Per-folder save path, concurrency, headers, auto-date directories
-- **Script Hooks (JS/TS)** — 5 lifecycle hooks (`beforeRequest`, `headersReceived`, `completed`, `error`, `progress`) powered by rustyscript. URL regex filtering, auto-loading from `scripts/` directory. See [Script User Guide](docs/Script_UserGuide.md)
+- **Script Hooks (JavaScript)** — 6 lifecycle hooks (`beforeRequest`, `headersReceived`, `authRequired`, `completed`, `error`, `progress`) powered by V8 via deno_core. URL regex filtering, auto-loading from `scripts/` directory. See [Script User Guide](docs/Script_UserGuide.md)
 - **Interactive Dialogs** — Add download, folder management, search/filter, help screen, confirmation prompts
 - **i18n** — English / Japanese (~180 strings via Mozilla Fluent, runtime switchable)
 
@@ -31,7 +31,7 @@ cargo build --release
 ```
 
 ### Requirements
-- **Rust** 1.75+ (for build)
+- **Rust** 1.85+ (edition 2024)
 - **Windows Terminal** recommended (for best TUI experience)
 - Any ANSI-compatible terminal works (cmd, PowerShell, WSL, SSH)
 
@@ -139,6 +139,7 @@ Inspired by classic download managers:
 Built with:
 - [ratatui](https://github.com/ratatui-org/ratatui) - Terminal UI framework
 - [crossterm](https://github.com/crossterm-rs/crossterm) - Terminal manipulation
+- [deno_core](https://github.com/denoland/deno_core) - V8 JavaScript runtime
 - [tokio](https://tokio.rs/) - Async runtime
 - [reqwest](https://github.com/seanmonstar/reqwest) - HTTP client
 - [serde](https://serde.rs/) - Serialization

@@ -1,7 +1,7 @@
 /// Dedicated script executor thread
 ///
 /// Runs in a separate OS thread to handle script execution requests.
-/// This avoids Send/Sync issues with rustyscript::Runtime.
+/// This avoids Send/Sync issues with deno_core::JsRuntime.
 
 use super::message::ScriptRequest;
 use super::ScriptManager;

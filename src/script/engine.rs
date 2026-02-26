@@ -1,23 +1,24 @@
 use crate::script::error::{ScriptError, ScriptResult};
 use crate::script::events::{EventContext, HookEvent};
+use deno_core::{v8, JsRuntime, RuntimeOptions};
 use regex::Regex;
-use rustyscript::{Runtime, RuntimeOptions};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// JavaScript engine wrapper around rustyscript Runtime
+/// JavaScript engine wrapper around deno_core JsRuntime
 ///
 /// Manages:
-/// - rustyscript Runtime initialization
+/// - V8 runtime initialization via deno_core
 /// - Event handler registry
 /// - Handler execution with timeout enforcement
 /// - URL filtering
 pub struct ScriptEngine {
-    runtime: Runtime,
+    runtime: JsRuntime,
     handlers: Arc<Mutex<HashMap<HookEvent, Vec<EventHandler>>>>,
-    #[allow(dead_code)]
     timeout: Duration,
 }
 
@@ -70,6 +71,49 @@ impl UrlFilter {
 }
 
 impl ScriptEngine {
+    /// Deserialize a V8 global value into a Rust type via serde_v8
+    fn deserialize_v8<T: for<'de> Deserialize<'de>>(
+        &mut self,
+        global: v8::Global<v8::Value>,
+    ) -> ScriptResult<T> {
+        deno_core::scope!(scope, self.runtime);
+        let local = v8::Local::new(scope, global);
+        deno_core::serde_v8::from_v8(scope, local)
+            .map_err(|e| ScriptError::InternalError(format!("V8 deserialization error: {}", e)))
+    }
+
+    /// Execute JavaScript with timeout enforcement.
+    /// Returns the raw v8::Global<v8::Value> on success.
+    fn execute_with_timeout(
+        &mut self,
+        name: &'static str,
+        code: String,
+    ) -> ScriptResult<v8::Global<v8::Value>> {
+        let handle = self.runtime.v8_isolate().thread_safe_handle();
+        let timeout = self.timeout;
+        let done = Arc::new(AtomicBool::new(false));
+        let done_clone = done.clone();
+
+        std::thread::spawn(move || {
+            std::thread::sleep(timeout);
+            if !done_clone.load(Ordering::SeqCst) {
+                handle.terminate_execution();
+            }
+        });
+
+        let result = self.runtime.execute_script(name, code);
+        done.store(true, Ordering::SeqCst);
+
+        match result {
+            Ok(global) => Ok(global),
+            Err(e) => {
+                // Reset termination state so runtime can be reused
+                self.runtime.v8_isolate().cancel_terminate_execution();
+                Err(ScriptError::InternalError(e.to_string()))
+            }
+        }
+    }
+
     /// Create new script engine with timeout
     /// Clear all registered handlers (used when reloading scripts)
     pub fn clear_handlers(&mut self) {
@@ -78,7 +122,10 @@ impl ScriptEngine {
         drop(handlers);
 
         // Also clear JavaScript-side handler registry and reset callback ID
-        if let Err(e) = self.runtime.eval::<()>("ggg._handlers.clear(); ggg._nextCallbackId = 0;") {
+        if let Err(e) = self.runtime.execute_script(
+            "<ggg:clear>",
+            "ggg._handlers.clear(); ggg._nextCallbackId = 0;".to_string(),
+        ) {
             tracing::warn!("Failed to clear JavaScript handlers: {}", e);
         }
 
@@ -86,18 +133,9 @@ impl ScriptEngine {
     }
 
     pub fn new(timeout: Duration) -> ScriptResult<Self> {
-        // Initialize rustyscript runtime with options
-        let options = RuntimeOptions {
-            timeout,
-            ..Default::default()
-        };
-
-        let mut runtime = Runtime::new(options).map_err(|e| {
-            ScriptError::RuntimeInitError(format!("Failed to create runtime: {}", e))
-        })?;
+        let mut runtime = JsRuntime::new(RuntimeOptions::default());
 
         let handlers = Arc::new(Mutex::new(HashMap::new()));
-        let handlers_clone = Arc::clone(&handlers);
 
         // Register global `ggg` object with API functions
         let register_code = r#"
@@ -163,13 +201,15 @@ impl ScriptEngine {
             };
         "#;
 
-        runtime.eval::<()>(register_code).map_err(|e| {
-            ScriptError::RuntimeInitError(format!("Failed to register ggg API: {}", e))
-        })?;
+        runtime
+            .execute_script("<ggg:init>", register_code.to_string())
+            .map_err(|e| {
+                ScriptError::RuntimeInitError(format!("Failed to register ggg API: {}", e))
+            })?;
 
         Ok(Self {
             runtime,
-            handlers: handlers_clone,
+            handlers,
             timeout,
         })
     }
@@ -182,19 +222,22 @@ impl ScriptEngine {
             source: e,
         })?;
 
-        // Execute script to register handlers
-        self.runtime
-            .eval::<()>(&script_content)
+        // Execute script to register handlers (with timeout)
+        self.execute_with_timeout("<ggg:load>", script_content)
             .map_err(|e| ScriptError::CompilationError {
                 path: path.to_owned(),
                 message: e.to_string(),
             })?;
 
         // Extract registered handlers from JavaScript
-        let handlers_json: String = self
+        let global = self
             .runtime
-            .eval("JSON.stringify(Array.from(ggg._handlers.entries()))")
+            .execute_script(
+                "<ggg:handlers>",
+                "JSON.stringify(Array.from(ggg._handlers.entries()))".to_string(),
+            )
             .map_err(|e| ScriptError::InternalError(format!("Failed to get handlers: {}", e)))?;
+        let handlers_json: String = self.deserialize_v8(global)?;
 
         // Parse handlers and store in registry
         let handlers_data: Vec<(String, Vec<serde_json::Value>)> =
@@ -232,9 +275,11 @@ impl ScriptEngine {
 
         // Clear JavaScript handlers map for next script
         // (Callbacks remain in globalThis, handlers map is just for registration)
-        self.runtime.eval::<()>("ggg._handlers.clear()").map_err(|e| {
-            ScriptError::InternalError(format!("Failed to clear handlers map: {}", e))
-        })?;
+        self.runtime
+            .execute_script("<ggg:clear_map>", "ggg._handlers.clear()".to_string())
+            .map_err(|e| {
+                ScriptError::InternalError(format!("Failed to clear handlers map: {}", e))
+            })?;
 
         tracing::info!("Loaded script: {:?}", path);
         Ok(())
@@ -296,8 +341,21 @@ impl ScriptEngine {
                 handler.callback_id
             );
 
-            let result: serde_json::Value = match self.runtime.eval(&callback_code) {
-                Ok(v) => v,
+            let exec_result = self.execute_with_timeout("<ggg:callback>", callback_code);
+
+            let result: serde_json::Value = match exec_result {
+                Ok(global) => match self.deserialize_v8(global) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!(
+                            script = ?handler.script_path,
+                            "Script deserialization error: {}",
+                            e
+                        );
+                        self.flush_log_buffer(&handler.script_path);
+                        continue;
+                    }
+                },
                 Err(e) => {
                     tracing::error!(
                         script = ?handler.script_path,
@@ -335,10 +393,14 @@ impl ScriptEngine {
 
     /// Flush buffered ggg.log() messages to tracing
     fn flush_log_buffer(&mut self, script_path: &Path) {
-        let messages: Vec<String> = self
+        let global = match self
             .runtime
-            .eval("ggg._logBuffer.splice(0)")
-            .unwrap_or_default();
+            .execute_script("<ggg:log>", "ggg._logBuffer.splice(0)".to_string())
+        {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let messages: Vec<String> = self.deserialize_v8(global).unwrap_or_default();
         for msg in messages {
             tracing::info!(script = ?script_path, "[Script] {}", msg);
         }

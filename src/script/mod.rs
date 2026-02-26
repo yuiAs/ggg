@@ -6,7 +6,7 @@
 /// # Architecture
 ///
 /// - ScriptManager: Public API, coordinates script lifecycle
-/// - ScriptEngine: Wraps rustyscript Runtime, executes handlers
+/// - ScriptEngine: Wraps deno_core JsRuntime (V8), executes handlers
 /// - ScriptLoader: Loads scripts from filesystem
 /// - events: Event types and context structures
 /// - api: JavaScript API bindings (ggg.*)
