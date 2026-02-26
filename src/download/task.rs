@@ -88,6 +88,9 @@ impl DownloadTask {
             .split('/')
             .last()
             .unwrap_or("download")
+            .split('?')
+            .next()
+            .unwrap_or("download")
             .to_string();
 
         let mut task = Self {
@@ -141,6 +144,9 @@ impl DownloadTask {
         let filename = url
             .split('/')
             .last()
+            .unwrap_or("download")
+            .split('?')
+            .next()
             .unwrap_or("download")
             .to_string();
 
