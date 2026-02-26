@@ -2,6 +2,8 @@
 
 A terminal-based download manager, built in Rust.
 
+![Screenshot-0.3.0](docs/screenshots/0.3.0.png)
+
 ## Features
 
 - **Core Download Engine** — HTTP/HTTPS streaming, resume (Range/ETag), concurrent downloads, automatic retry with exponential backoff, queue persistence
