@@ -343,6 +343,7 @@ fn render_download_list(app: &TuiApp, f: &mut Frame, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(border_style)
                 .title(title)
+                .style(Style::default().bg(Color::Black))
         )
         .row_highlight_style(
             Style::default()
