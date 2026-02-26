@@ -1,5 +1,6 @@
 [workspace]
 members = [".", "windows/ggg-dnd"]
+default-members = [".", "windows/ggg-dnd"]
 resolver = "2"
 
 [package]
