@@ -79,7 +79,7 @@ impl ResolvedSettings {
             .map(|f| f.auto_date_directory)
             .unwrap_or(false)
         {
-            let date_str = task.created_at.format("%Y%m%d").to_string();
+            let date_str = task.created_at.with_timezone(&chrono::Local).format("%Y%m%d").to_string();
             base_path.join(date_str)
         } else {
             base_path
@@ -404,7 +404,7 @@ mod tests {
         let resolved = ResolvedSettings::resolve(&config, "test_folder", &task);
 
         // Should have date directory appended
-        let date_str = task.created_at.format("%Y%m%d").to_string();
+        let date_str = task.created_at.with_timezone(&chrono::Local).format("%Y%m%d").to_string();
         let expected_path = PathBuf::from("C:\\TestFolder").join(date_str);
         assert_eq!(resolved.save_path, expected_path);
     }
