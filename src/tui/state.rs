@@ -320,6 +320,10 @@ pub struct TuiState {
     /// Per-folder download tasks (folder_id -> tasks)
     pub folder_downloads: std::collections::HashMap<String, Vec<DownloadTask>>,
 
+    /// Folder display names cache (folder_id UUID -> display name)
+    /// Updated every tick from config
+    pub folder_names: std::collections::HashMap<String, String>,
+
     /// Download history items (completed, failed, deleted)
     pub history_items: Vec<DownloadTask>,
 
@@ -385,6 +389,9 @@ pub struct TuiState {
 
     /// Settings screen: currently editing application setting
     pub is_editing_app_setting: bool,
+
+    /// Settings screen: renaming a folder (old name stored here)
+    pub renaming_folder_id: Option<String>,
 
     /// Validation/error message to display (None = no error)
     pub validation_error: Option<String>,
@@ -466,6 +473,7 @@ impl TuiState {
             app_state,
             i18n,
             folder_downloads: std::collections::HashMap::new(),
+            folder_names: std::collections::HashMap::new(),
             history_items: Vec::new(),
             selected_index: 0,
             scroll_offset: 0,
@@ -488,6 +496,7 @@ impl TuiState {
             settings_section: SettingsSection::Application,
             app_settings_field_index: 0,
             is_editing_app_setting: false,
+            renaming_folder_id: None,
             validation_error: None,
             needs_redraw: true,  // Initial render needed
             script_files_index: 0,
@@ -521,15 +530,20 @@ impl TuiState {
         
         self.history_items = manager.get_history().await;
 
-        // Also update tree items based on current config
+        // Also update tree items and folder name cache based on current config
         let config = self.app_state.config.read().await;
-        let mut folders: Vec<String> = config.folders.keys().cloned().collect();
-        folders.sort();
+        // Update folder names cache
+        self.folder_names.clear();
+        for (id, fc) in &config.folders {
+            let name = if fc.name.is_empty() { id.clone() } else { fc.name.clone() };
+            self.folder_names.insert(id.clone(), name);
+        }
+        let entries = config.sorted_folder_entries();
         drop(config);
 
-        self.tree_items = folders
+        self.tree_items = entries
             .into_iter()
-            .map(FolderTreeItem::Folder)
+            .map(|(id, _name)| FolderTreeItem::Folder(id))
             .chain(std::iter::once(FolderTreeItem::CompletedNode))
             .collect();
     }
@@ -916,6 +930,20 @@ impl TuiState {
     /// * Translated string with substituted arguments
     pub fn t_with_args(&self, key: &str, args: Option<&fluent_bundle::FluentArgs>) -> String {
         self.i18n.get_with_args(key, args)
+    }
+
+    /// Look up folder display name from UUID.
+    /// Returns the display name from the cache, or the raw ID as fallback.
+    pub fn folder_display_name(&self, folder_id: &str) -> String {
+        self.folder_names
+            .get(folder_id)
+            .cloned()
+            .unwrap_or_else(|| folder_id.to_string())
+    }
+
+    /// Get the display name of the current folder
+    pub fn current_folder_name(&self) -> String {
+        self.folder_display_name(&self.current_folder_id)
     }
 
     /// Mark UI as needing redraw (dirty flag)

@@ -1122,11 +1122,10 @@ impl TuiApp {
             }
 
             SettingsSection::Folder => {
-                // Get folder list
+                // Get folder list (sorted by display name)
                 let config = self.state.app_state.config.read().await;
-                let mut folder_ids: Vec<String> = config.folders.keys().cloned().collect();
-                folder_ids.sort();
-                let folder_count = folder_ids.len();
+                let folder_entries = config.sorted_folder_entries();
+                let folder_count = folder_entries.len();
                 drop(config);
 
                 match key {
@@ -1135,14 +1134,14 @@ impl TuiApp {
                         self.state.move_folder_selection_down(folder_count);
                         if folder_count > 0 {
                             self.state.selected_folder_id =
-                                Some(folder_ids[self.state.settings_folder_index].clone());
+                                Some(folder_entries[self.state.settings_folder_index].0.clone());
                         }
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
                         self.state.move_folder_selection_up();
                         if folder_count > 0 {
                             self.state.selected_folder_id =
-                                Some(folder_ids[self.state.settings_folder_index].clone());
+                                Some(folder_entries[self.state.settings_folder_index].0.clone());
                         }
                     }
 
@@ -1154,6 +1153,11 @@ impl TuiApp {
                     // Delete selected folder
                     KeyCode::Char('d') => {
                         self.delete_selected_folder().await?;
+                    }
+
+                    // Rename selected folder
+                    KeyCode::Char('r') => {
+                        self.start_rename_folder().await;
                     }
 
                     // Save configuration
@@ -1179,6 +1183,11 @@ impl TuiApp {
 
     /// Handle folder edit mode
     async fn handle_folder_edit_mode(&mut self, key: KeyCode, mods: KeyModifiers) -> Result<()> {
+        // If renaming a folder, handle text input for rename
+        if self.state.renaming_folder_id.is_some() {
+            return self.handle_rename_text_input(key, mods).await;
+        }
+
         // If currently editing a field, handle text input
         if self.state.settings_edit_field.is_some() {
             return self.handle_field_text_input(key, mods).await;
@@ -1639,11 +1648,10 @@ impl TuiApp {
 
     /// Handle switch folder mode (folder picker dialog)
     async fn handle_switch_folder_mode(&mut self, key: KeyCode) -> Result<()> {
-        // Get folder list
+        // Get folder list (sorted by display name)
         let config = self.state.app_state.config.read().await;
-        let mut folder_ids: Vec<String> = config.folders.keys().cloned().collect();
-        folder_ids.sort();
-        let folder_count = folder_ids.len();
+        let folder_entries = config.sorted_folder_entries();
+        let folder_count = folder_entries.len();
         drop(config);
 
         match key {
@@ -1662,10 +1670,11 @@ impl TuiApp {
                 }
             }
             KeyCode::Enter => {
-                // Select folder
+                // Select folder by UUID
                 if folder_count > 0 && self.state.folder_picker_index < folder_count {
-                    self.state.current_folder_id = folder_ids[self.state.folder_picker_index].clone();
-                    tracing::info!("Switched current folder to: {}", self.state.current_folder_id);
+                    let (folder_id, display_name) = &folder_entries[self.state.folder_picker_index];
+                    self.state.current_folder_id = folder_id.clone();
+                    tracing::info!("Switched current folder to: {} ({})", display_name, folder_id);
                 }
                 self.state.ui_mode = UiMode::Normal;
             }
@@ -2082,16 +2091,20 @@ impl TuiApp {
     async fn create_new_folder(&mut self) -> Result<()> {
         let mut config = self.state.app_state.config.write().await;
 
-        // Find unique folder name
+        // Generate unique display name
         let mut counter = 1;
-        let mut new_folder_id = format!("folder_{}", counter);
-        while config.folders.contains_key(&new_folder_id) {
+        let mut display_name = format!("folder_{}", counter);
+        while config.folders.values().any(|f| f.name == display_name) {
             counter += 1;
-            new_folder_id = format!("folder_{}", counter);
+            display_name = format!("folder_{}", counter);
         }
+
+        // UUID-based folder ID
+        let new_folder_id = crate::app::config::Config::generate_folder_id();
 
         // Create new folder with default settings
         let new_folder = crate::app::config::FolderConfig {
+            name: display_name,
             save_path: config.download.default_directory.clone(),
             auto_date_directory: false,
             auto_start_downloads: false,
@@ -2111,11 +2124,107 @@ impl TuiApp {
         Ok(())
     }
 
+    /// Handle text input during folder rename (within FolderEdit mode)
+    async fn handle_rename_text_input(&mut self, key: KeyCode, mods: KeyModifiers) -> Result<()> {
+        // Handle Ctrl+u to clear buffer
+        if matches!(key, KeyCode::Char('u')) && mods.contains(KeyModifiers::CONTROL) {
+            self.state.input_buffer.clear();
+            return Ok(());
+        }
+
+        match key {
+            KeyCode::Char(c) => {
+                if self.state.input_buffer.len() < MAX_INPUT_LENGTH {
+                    self.state.input_buffer.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                self.state.input_buffer.pop();
+            }
+            KeyCode::Enter => {
+                self.apply_rename_folder().await?;
+                self.state.input_buffer.clear();
+                // Stay in Settings/Folder mode
+                self.state.ui_mode = UiMode::Settings;
+            }
+            KeyCode::Esc => {
+                self.state.renaming_folder_id = None;
+                self.state.input_buffer.clear();
+                self.state.ui_mode = UiMode::Settings;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Start renaming the selected folder (stays in FolderEdit mode with text input)
+    async fn start_rename_folder(&mut self) {
+        if let Some(ref folder_id) = self.state.selected_folder_id {
+            // Get current display name for the input buffer
+            let current_name = {
+                let config = self.state.app_state.config.read().await;
+                config.folder_name(folder_id)
+            };
+            self.state.renaming_folder_id = Some(folder_id.clone());
+            self.state.input_buffer = current_name;
+            self.state.input_title = "Rename Folder".to_string();
+            self.state.input_prompt = "New name:".to_string();
+            // Stay in FolderEdit mode — the rename input is handled there
+            self.state.ui_mode = UiMode::FolderEdit;
+        }
+    }
+
+    /// Apply folder rename: only updates the display name (folder_id is immutable UUID)
+    async fn apply_rename_folder(&mut self) -> Result<()> {
+        let folder_id = match self.state.renaming_folder_id.take() {
+            Some(id) => id,
+            None => return Ok(()),
+        };
+        let new_name = self.state.input_buffer.trim().to_string();
+
+        // Validate new name
+        if new_name.is_empty() {
+            return Ok(());
+        }
+
+        // Check for duplicate display names
+        {
+            let config = self.state.app_state.config.read().await;
+            let current_name = config.folder_name(&folder_id);
+            if new_name == current_name {
+                return Ok(());
+            }
+            if config.folders.values().any(|f| f.name == new_name) {
+                self.state.validation_error = Some(format!("Folder '{}' already exists", new_name));
+                self.state.renaming_folder_id = Some(folder_id);
+                return Ok(());
+            }
+        }
+
+        // Update only the display name — UUID key, directory, and task folder_ids stay the same
+        {
+            let mut config = self.state.app_state.config.write().await;
+            if let Some(folder_config) = config.folders.get_mut(&folder_id) {
+                folder_config.name = new_name.clone();
+            }
+            if let Err(e) = config.save() {
+                tracing::error!("Failed to save config after folder rename: {}", e);
+            }
+        }
+
+        tracing::info!("Renamed folder '{}' display name to '{}'", folder_id, new_name);
+        Ok(())
+    }
+
     /// Delete selected folder in settings
     async fn delete_selected_folder(&mut self) -> Result<()> {
         if let Some(ref folder_id) = self.state.selected_folder_id {
-            // Don't allow deleting the "default" folder
-            if folder_id == "default" {
+            // Don't allow deleting the "default" folder (check by display name)
+            let is_default = {
+                let config = self.state.app_state.config.read().await;
+                config.folder_name(folder_id) == "default"
+            };
+            if is_default {
                 tracing::warn!("Cannot delete the default folder");
                 return Ok(());
             }
@@ -2474,6 +2583,16 @@ pub async fn run_tui(
 
     // Create app
     let mut app = TuiApp::new(app_state, manager, &keybindings);
+
+    // Set initial current_folder_id to the "default" folder's UUID
+    {
+        let config = app.state.app_state.config.read().await;
+        if let Some(default_id) = config.find_folder_id_by_name("default") {
+            app.state.current_folder_id = default_id;
+        } else if let Some((first_id, _)) = config.sorted_folder_entries().first() {
+            app.state.current_folder_id = first_id.clone();
+        }
+    }
 
     // Load downloads initially
     app.state.update_downloads(&app.manager).await;

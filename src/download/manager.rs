@@ -886,6 +886,22 @@ impl DownloadManager {
         }
     }
 
+    /// Rename a folder: update folder_id on all tasks in the old folder queue,
+    /// then move the queue entry to the new key.
+    pub async fn rename_folder(&self, old_id: &str, new_id: &str) -> Result<()> {
+        let mut queues = self.folder_queues.write().await;
+        if let Some(queue) = queues.remove(old_id) {
+            // Update folder_id on every task in the queue
+            let tasks = queue.get_all().await;
+            for mut task in tasks {
+                task.folder_id = new_id.to_string();
+                queue.update(task).await;
+            }
+            queues.insert(new_id.to_string(), queue);
+        }
+        Ok(())
+    }
+
     pub async fn change_save_path(&self, id: Uuid, new_path: std::path::PathBuf) -> Result<()> {
         if let Some(mut task) = self.get_by_id(id).await {
             // Only allow changing path if download hasn't started or is paused

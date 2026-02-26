@@ -1024,6 +1024,7 @@ async fn handle_folder_list(state: &AppState, json: bool) -> Result<i32> {
             .map(|(id, folder)| {
                 serde_json::json!({
                     "id": id,
+                    "name": folder.name,
                     "save_path": folder.save_path.display().to_string(),
                     "auto_date_directory": folder.auto_date_directory,
                     "auto_start_downloads": folder.auto_start_downloads,
@@ -1036,7 +1037,8 @@ async fn handle_folder_list(state: &AppState, json: bool) -> Result<i32> {
     } else {
         println!("Folders ({} total)\n", config.folders.len());
         for (id, folder) in &config.folders {
-            println!("ID: {}", id);
+            println!("Name: {}", folder.name);
+            println!("  ID: {}", id);
             println!("  Path: {}", folder.save_path.display());
             println!("  Auto-Date Directory: {}", folder.auto_date_directory);
             println!("  Auto-Start: {}", folder.auto_start_downloads);
@@ -1062,13 +1064,15 @@ async fn handle_folder_create(
 ) -> Result<i32> {
     let mut config = state.config.write().await;
 
-    // Check if folder already exists
-    if config.folders.contains_key(&id) {
+    // Check if folder with same display name already exists
+    if config.folders.values().any(|f| f.name == id) {
         return Err(anyhow::anyhow!("Folder '{}' already exists", id));
     }
 
-    // Create folder config
+    // Create folder config with UUID key
+    let folder_id = Config::generate_folder_id();
     let folder_config = FolderConfig {
+        name: id.clone(),
         save_path: PathBuf::from(&path),
         auto_date_directory: false,
         auto_start_downloads: auto_start,
@@ -1082,7 +1086,7 @@ async fn handle_folder_create(
     // Create directory if it doesn't exist
     std::fs::create_dir_all(&folder_config.save_path)?;
 
-    config.folders.insert(id.clone(), folder_config);
+    config.folders.insert(folder_id, folder_config);
     config.save()?;
 
     println!("Created folder: {}", id);
@@ -1092,12 +1096,23 @@ async fn handle_folder_create(
     Ok(error::SUCCESS)
 }
 
+/// Resolve folder identifier: accepts either UUID key or display name
+fn resolve_folder_id(config: &Config, id: &str) -> Option<String> {
+    // Try direct key match first (UUID)
+    if config.folders.contains_key(id) {
+        return Some(id.to_string());
+    }
+    // Fallback: search by display name
+    config.find_folder_id_by_name(id)
+}
+
 /// Show folder settings
 async fn handle_folder_show(state: &AppState, id: String, json: bool) -> Result<i32> {
     let config = state.config.read().await;
 
-    let folder = config.folders.get(&id)
+    let folder_id = resolve_folder_id(&config, &id)
         .ok_or_else(|| anyhow::anyhow!("Folder '{}' not found", id))?;
+    let folder = config.folders.get(&folder_id).unwrap();
 
     if json {
         let folder_info = serde_json::json!({
@@ -1159,8 +1174,9 @@ async fn handle_folder_show(state: &AppState, id: String, json: bool) -> Result<
 async fn handle_folder_config(state: &AppState, id: String, set: String) -> Result<i32> {
     let mut config = state.config.write().await;
 
-    let folder = config.folders.get_mut(&id)
+    let folder_id = resolve_folder_id(&config, &id)
         .ok_or_else(|| anyhow::anyhow!("Folder '{}' not found", id))?;
+    let folder = config.folders.get_mut(&folder_id).unwrap();
 
     // Parse key=value
     let parts: Vec<&str> = set.split('=').collect();
@@ -1205,14 +1221,14 @@ async fn handle_folder_config(state: &AppState, id: String, set: String) -> Resu
 async fn handle_folder_delete(state: &AppState, id: String) -> Result<i32> {
     let mut config = state.config.write().await;
 
-    if !config.folders.contains_key(&id) {
-        return Err(anyhow::anyhow!("Folder '{}' not found", id));
-    }
+    let folder_id = resolve_folder_id(&config, &id)
+        .ok_or_else(|| anyhow::anyhow!("Folder '{}' not found", id))?;
+    let display_name = config.folder_name(&folder_id);
 
-    config.folders.remove(&id);
+    config.folders.remove(&folder_id);
     config.save()?;
 
-    println!("Deleted folder: {}", id);
+    println!("Deleted folder: {}", display_name);
     println!("Note: Files in the folder's save path were not deleted");
 
     Ok(error::SUCCESS)

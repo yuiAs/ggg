@@ -2,6 +2,7 @@ use crate::app::keybindings::KeybindingsConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 /// Application-level configuration (saved to config/settings.toml)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +89,9 @@ pub struct ScriptConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderConfig {
+    /// Display name for the folder (user-visible)
+    #[serde(default)]
+    pub name: String,
     pub save_path: PathBuf,
     #[serde(default)]
     pub auto_date_directory: bool,
@@ -108,6 +112,7 @@ pub struct FolderConfig {
 impl Default for FolderConfig {
     fn default() -> Self {
         Self {
+            name: String::new(),
             save_path: crate::util::paths::resolve_default_download_directory(),
             auto_date_directory: false,
             auto_start_downloads: false,
@@ -116,6 +121,16 @@ impl Default for FolderConfig {
             max_concurrent: None,
             user_agent: None,
             default_headers: HashMap::new(),
+        }
+    }
+}
+
+impl FolderConfig {
+    /// Create a new FolderConfig with a display name
+    pub fn new_with_name(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ..Self::default()
         }
     }
 }
@@ -164,20 +179,73 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Look up folder display name by UUID key.
+    /// Returns the folder's `name` field, or the key itself as fallback.
+    pub fn folder_name(&self, folder_id: &str) -> String {
+        self.folders
+            .get(folder_id)
+            .map(|f| {
+                if f.name.is_empty() {
+                    folder_id.to_string()
+                } else {
+                    f.name.clone()
+                }
+            })
+            .unwrap_or_else(|| folder_id.to_string())
+    }
+
+    /// Find folder UUID key by display name.
+    /// Returns None if no folder has the given name.
+    pub fn find_folder_id_by_name(&self, name: &str) -> Option<String> {
+        self.folders
+            .iter()
+            .find(|(_, f)| f.name == name)
+            .map(|(k, _)| k.clone())
+    }
+
+    /// Get sorted list of (folder_id, display_name) pairs
+    pub fn sorted_folder_entries(&self) -> Vec<(String, String)> {
+        let mut entries: Vec<(String, String)> = self
+            .folders
+            .iter()
+            .map(|(id, f)| {
+                let display = if f.name.is_empty() {
+                    id.clone()
+                } else {
+                    f.name.clone()
+                };
+                (id.clone(), display)
+            })
+            .collect();
+        entries.sort_by(|a, b| a.1.cmp(&b.1));
+        entries
+    }
+
+    /// Generate a new UUID-based folder key
+    pub fn generate_folder_id() -> String {
+        Uuid::new_v4().to_string()
+    }
+
     /// Load configuration from multi-file structure
     pub fn load() -> anyhow::Result<Self> {
         // Step 1: Load application-level config
         let app_config = Self::load_application_config()?;
 
         // Step 2: Load all folder configs
-        let mut folders = Self::load_all_folder_configs()?;
+        let folders = Self::load_all_folder_configs()?;
 
-        // Step 3: Ensure "default" folder exists
-        if !folders.contains_key("default") {
+        // Step 3: Migrate legacy name-based keys to UUID keys
+        let (mut folders, migrated) = Self::migrate_folder_keys(folders);
+
+        // Step 4: Ensure a "default" folder exists (any folder named "default")
+        let has_default = folders.values().any(|f| f.name == "default");
+        if !has_default {
             tracing::info!("Creating default folder config");
+            let default_id = Self::generate_folder_id();
             folders.insert(
-                "default".to_string(),
+                default_id,
                 FolderConfig {
+                    name: "default".to_string(),
                     save_path: app_config.download.default_directory.clone(),
                     auto_date_directory: false,
                     auto_start_downloads: false,
@@ -190,7 +258,7 @@ impl Config {
             );
         }
 
-        // Step 4: Construct Config
+        // Step 5: Construct Config
         let config = Self {
             general: app_config.general,
             download: app_config.download,
@@ -200,7 +268,7 @@ impl Config {
             folders,
         };
 
-        // Step 5: Validate
+        // Step 6: Validate
         if let Err(errors) = crate::app::settings::validate_folder_config(&config) {
             return Err(anyhow::anyhow!(
                 "Invalid configuration: {}",
@@ -210,6 +278,14 @@ impl Config {
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
+        }
+
+        // Step 7: Auto-save after migration to persist new UUID keys
+        if migrated {
+            tracing::info!("Saving migrated folder configs with UUID keys");
+            if let Err(e) = config.save() {
+                tracing::error!("Failed to save migrated config: {}", e);
+            }
         }
 
         Ok(config)
@@ -411,6 +487,87 @@ impl Config {
 
         tracing::debug!("Saved folder config: {}", folder_name);
         Ok(())
+    }
+
+    /// Migrate legacy folder configs: name-based keys → UUID keys.
+    ///
+    /// If a folder key is NOT a valid UUID, it is treated as a legacy name-based
+    /// key. The folder is re-keyed with a new UUID, the old key becomes the
+    /// `name` field, and the config directory is renamed on disk.
+    ///
+    /// Returns `(migrated_folders, did_migrate)`.
+    fn migrate_folder_keys(
+        folders: HashMap<String, FolderConfig>,
+    ) -> (HashMap<String, FolderConfig>, bool) {
+        let mut migrated = HashMap::new();
+        let mut did_migrate = false;
+        // Collect old→new mappings for directory renames
+        let mut renames: Vec<(String, String)> = Vec::new();
+
+        for (key, mut folder_config) in folders {
+            if Uuid::parse_str(&key).is_ok() {
+                // Already a UUID key — ensure name is populated
+                if folder_config.name.is_empty() {
+                    folder_config.name = key.clone();
+                }
+                migrated.insert(key, folder_config);
+            } else {
+                // Legacy name-based key — assign UUID
+                let new_id = Self::generate_folder_id();
+                tracing::info!(
+                    "Migrating folder '{}' → UUID '{}'",
+                    key,
+                    new_id
+                );
+                folder_config.name = key.clone();
+                renames.push((key, new_id.clone()));
+                migrated.insert(new_id, folder_config);
+                did_migrate = true;
+            }
+        }
+
+        // Rename config directories on disk
+        if did_migrate {
+            if let Ok(config_dir) = crate::util::paths::find_config_directory() {
+                for (old_name, new_id) in &renames {
+                    let old_dir = config_dir.join(old_name);
+                    let new_dir = config_dir.join(new_id);
+                    if old_dir.exists() && old_dir.is_dir() {
+                        if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
+                            tracing::error!(
+                                "Failed to rename folder dir '{}' → '{}': {}",
+                                old_dir.display(),
+                                new_dir.display(),
+                                e
+                            );
+                        } else {
+                            tracing::info!(
+                                "Renamed folder dir: {} → {}",
+                                old_dir.display(),
+                                new_dir.display()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        (migrated, did_migrate)
+    }
+
+    /// Get the migration mapping from old name-based keys to new UUID keys.
+    /// Used to update queue files after migration.
+    pub fn get_migration_map(
+        folders: &HashMap<String, FolderConfig>,
+    ) -> HashMap<String, String> {
+        // Returns name → uuid mapping for all folders
+        let mut map = HashMap::new();
+        for (id, config) in folders {
+            if !config.name.is_empty() {
+                map.insert(config.name.clone(), id.clone());
+            }
+        }
+        map
     }
 
     #[cfg(test)]
@@ -688,6 +845,7 @@ timeout = 60
     #[test]
     fn test_folder_config_inherits_when_none() {
         let folder_config = FolderConfig {
+            name: "test".to_string(),
             save_path: PathBuf::from("C:\\Test"),
             auto_date_directory: true,
             auto_start_downloads: false,

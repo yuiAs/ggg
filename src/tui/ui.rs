@@ -143,10 +143,18 @@ fn render_folder_tree(app: &TuiApp, f: &mut Frame, area: Rect) {
 
     // Build list items from tree_items
     let completed_label = t("tree-completed-node");
+    // Pre-compute folder display names for tree items
+    let folder_tree_names: Vec<String> = app.state.tree_items.iter().map(|item| {
+        match item {
+            FolderTreeItem::Folder(id) => app.state.folder_display_name(id),
+            FolderTreeItem::CompletedNode => completed_label.clone(),
+        }
+    }).collect();
+
     let items: Vec<ListItem> = app.state.tree_items.iter().enumerate().map(|(i, item)| {
-        let (icon, name): (&str, &str) = match item {
-            FolderTreeItem::Folder(id) => ("📁", id.as_str()),
-            FolderTreeItem::CompletedNode => ("📋", completed_label.as_str()),
+        let (icon, name) = match item {
+            FolderTreeItem::Folder(_) => ("📁", folder_tree_names[i].as_str()),
+            FolderTreeItem::CompletedNode => ("📋", folder_tree_names[i].as_str()),
         };
 
         let style = if i == app.state.tree_selected_index {
@@ -618,8 +626,9 @@ fn render_status_bar(app: &TuiApp, f: &mut Frame, area: Rect) {
                 String::new()
             };
 
+            let current_folder_name = app.state.current_folder_name();
             let args = fluent_args! {
-                "folder" => app.state.current_folder_id.as_str(),
+                "folder" => current_folder_name.as_str(),
             };
             let left = format!(
                 "{} | {}{} | {}",
@@ -817,6 +826,60 @@ fn render_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
             render_folder_details(app, f, folder_chunks[1]);
         }
     }
+
+    // Overlay: rename input dialog (when renaming a folder in settings)
+    if app.state.renaming_folder_id.is_some() {
+        render_rename_dialog(app, f, area);
+    }
+}
+
+/// Render folder rename input dialog as overlay on settings screen
+fn render_rename_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let dialog_width = 50u16.min(area.width.saturating_sub(4));
+    let dialog_height = 5u16;
+
+    let dialog_area = Rect {
+        x: (area.width.saturating_sub(dialog_width)) / 2 + area.x,
+        y: (area.height.saturating_sub(dialog_height)) / 2 + area.y,
+        width: dialog_width,
+        height: dialog_height,
+    };
+
+    // Clear background
+    f.render_widget(Clear, dialog_area);
+
+    let title = &app.state.input_title;
+    let input_text = format!("{}_", &app.state.input_buffer);
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" {} ", title),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(100, 140, 180)));
+
+    let inner = block.inner(dialog_area);
+    f.render_widget(block, dialog_area);
+
+    // Prompt and input
+    let prompt_line = Line::from(vec![
+        Span::styled(
+            format!("{} ", &app.state.input_prompt),
+            Style::default().fg(Color::Rgb(180, 180, 190)),
+        ),
+        Span::styled(input_text, Style::default().fg(Color::White)),
+    ]);
+
+    let hint_line = Line::from(Span::styled(
+        "Enter: confirm | Esc: cancel",
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let text = Paragraph::new(vec![prompt_line, Line::from(""), hint_line]);
+    f.render_widget(text, inner);
 }
 
 /// Render settings section tabs
@@ -1131,11 +1194,10 @@ fn render_folder_list(app: &TuiApp, f: &mut Frame, area: Rect) {
     let mut folder_count = 0;
 
     if let Ok(config) = config {
-        let mut folder_ids: Vec<String> = config.folders.keys().cloned().collect();
-        folder_ids.sort();
-        folder_count = folder_ids.len();
+        let folder_entries = config.sorted_folder_entries();
+        folder_count = folder_entries.len();
 
-        for (idx, folder_id) in folder_ids.iter().enumerate() {
+        for (idx, (_folder_id, display_name)) in folder_entries.iter().enumerate() {
             let is_selected = idx == app.state.settings_folder_index;
             let style = if is_selected {
                 Style::default()
@@ -1152,7 +1214,7 @@ fn render_folder_list(app: &TuiApp, f: &mut Frame, area: Rect) {
             };
 
             folder_items.push(Line::from(Span::styled(
-                format!("{}{}", prefix, folder_id),
+                format!("{}{}", prefix, display_name),
                 style,
             )));
         }
@@ -1171,6 +1233,10 @@ fn render_folder_list(app: &TuiApp, f: &mut Frame, area: Rect) {
     folder_items.push(Line::from(Span::styled(
         "n: new folder",
         Style::default().fg(success_color),
+    )));
+    folder_items.push(Line::from(Span::styled(
+        "r: rename",
+        Style::default().fg(Color::Rgb(180, 160, 220)),
     )));
     folder_items.push(Line::from(Span::styled(
         "d: delete",
@@ -1241,20 +1307,19 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
     let mut detail_lines = Vec::new();
 
     if let Ok(config) = config {
-        // Get selected folder
-        let mut folder_ids: Vec<String> = config.folders.keys().cloned().collect();
-        folder_ids.sort();
+        // Get selected folder using sorted entries
+        let folder_entries = config.sorted_folder_entries();
 
-        let selected_folder_id = if app.state.settings_folder_index < folder_ids.len() {
-            Some(folder_ids[app.state.settings_folder_index].clone())
+        let selected_folder = if app.state.settings_folder_index < folder_entries.len() {
+            Some(folder_entries[app.state.settings_folder_index].clone())
         } else {
             None
         };
 
-        if let Some(ref folder_id) = selected_folder_id {
+        if let Some((ref folder_id, ref display_name)) = selected_folder {
             if let Some(folder_config) = config.folders.get(folder_id) {
                 detail_lines.push(Line::from(Span::styled(
-                    format!("Folder: {}", folder_id),
+                    format!("Folder: {}", display_name),
                     Style::default()
                         .fg(selected_color)
                         .add_modifier(Modifier::BOLD),
@@ -2077,21 +2142,20 @@ fn render_switch_folder_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
             return;
         }
     };
-    let mut folder_ids: Vec<String> = config.folders.keys().cloned().collect();
-    folder_ids.sort();
+    let folder_entries = config.sorted_folder_entries();
     drop(config);
 
     let selected_index = app.state.folder_picker_index;
 
     // Calculate dialog dimensions
-    let max_folder_width = folder_ids
+    let max_folder_width = folder_entries
         .iter()
-        .map(|id| id.len())
+        .map(|(_id, name)| name.len())
         .max()
         .unwrap_or(20);
 
     let dialog_width = (max_folder_width as u16 + 8).max(40).min(60);
-    let dialog_height = (folder_ids.len() as u16 + 4).max(8).min(20);
+    let dialog_height = (folder_entries.len() as u16 + 4).max(8).min(20);
 
     let dialog_area = Rect {
         x: (area.width.saturating_sub(dialog_width)) / 2,
@@ -2102,7 +2166,7 @@ fn render_switch_folder_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
 
     // Create folder list lines
     let mut folder_lines = Vec::new();
-    for (idx, folder_id) in folder_ids.iter().enumerate() {
+    for (idx, (folder_id, display_name)) in folder_entries.iter().enumerate() {
         let is_selected = idx == selected_index;
         let is_current = folder_id == &app.state.current_folder_id;
 
@@ -2122,7 +2186,7 @@ fn render_switch_folder_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
 
         folder_lines.push(Line::from(vec![
             Span::styled(prefix, style),
-            Span::styled(folder_id.clone(), style),
+            Span::styled(display_name.clone(), style),
             Span::styled(suffix, Style::default().fg(Color::DarkGray)),
         ]));
     }

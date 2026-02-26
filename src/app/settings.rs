@@ -298,6 +298,7 @@ mod tests {
         config.folders.insert(
             "test_folder".to_string(),
             FolderConfig {
+                name: String::new(),
                 save_path: PathBuf::from("C:\\TestFolder"),
                 auto_date_directory: false,
                 auto_start_downloads: false,
@@ -331,6 +332,7 @@ mod tests {
         config.folders.insert(
             "test_folder".to_string(),
             FolderConfig {
+                name: String::new(),
                 save_path: PathBuf::from("C:\\TestFolder"),
                 auto_date_directory: false,
                 auto_start_downloads: false,
@@ -381,6 +383,7 @@ mod tests {
         config.folders.insert(
             "test_folder".to_string(),
             FolderConfig {
+                name: String::new(),
                 save_path: PathBuf::from("C:\\TestFolder"),
                 auto_date_directory: true,
                 auto_start_downloads: false,
@@ -418,6 +421,7 @@ mod tests {
         config.folders.insert(
             "bad_folder".to_string(),
             FolderConfig {
+                name: String::new(),
                 save_path: PathBuf::from("C:\\BadFolder"),
                 auto_date_directory: false,
                 auto_start_downloads: false,
@@ -450,6 +454,7 @@ mod tests {
         config.folders.insert(
             "folder_scripts_on".to_string(),
             FolderConfig {
+                name: String::new(),
                 save_path: PathBuf::from("C:\\Folder1"),
                 auto_date_directory: false,
                 auto_start_downloads: false,
@@ -464,6 +469,7 @@ mod tests {
         config.folders.insert(
             "folder_scripts_off".to_string(),
             FolderConfig {
+                name: String::new(),
                 save_path: PathBuf::from("C:\\Folder2"),
                 auto_date_directory: false,
                 auto_start_downloads: false,
@@ -491,6 +497,7 @@ mod tests {
         config.folders.insert(
             "test_folder".to_string(),
             FolderConfig {
+                name: String::new(),
                 save_path: PathBuf::from("C:\\TestFolder"),
                 auto_date_directory: false,
                 auto_start_downloads: false,
@@ -530,6 +537,7 @@ mod tests {
         config.folders.insert(
             "folder_with_max".to_string(),
             FolderConfig {
+                name: String::new(),
                 save_path: PathBuf::from("C:\\Folder1"),
                 auto_date_directory: false,
                 auto_start_downloads: false,
@@ -545,6 +553,7 @@ mod tests {
         config.folders.insert(
             "folder_without_max".to_string(),
             FolderConfig {
+                name: String::new(),
                 save_path: PathBuf::from("C:\\Folder2"),
                 auto_date_directory: false,
                 auto_start_downloads: false,
