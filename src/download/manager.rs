@@ -500,10 +500,26 @@ impl DownloadManager {
         let size_str = info.size.map(|s| format!("{} bytes", s)).unwrap_or("unknown".to_string());
         task.log_info(format!("Server info: size={}, resume={}", size_str, info.resume_supported));
 
-        // Use filename from Content-Disposition if available
+        // Use filename from Content-Disposition if available (highest priority)
         if let Some(server_filename) = info.filename {
             task.filename = sanitize_filename(&server_filename);
             task.log_info(format!("Filename from server: {}", task.filename));
+        } else if let Some(ref final_url) = info.final_url {
+            // Fallback: extract filename from redirect destination URL
+            if final_url != &task.url {
+                let redirect_filename = final_url
+                    .split('/')
+                    .last()
+                    .unwrap_or("")
+                    .split('?')
+                    .next()
+                    .unwrap_or("");
+                if !redirect_filename.is_empty() {
+                    let sanitized = sanitize_filename(redirect_filename);
+                    task.log_info(format!("Filename from redirect: {} -> {}", task.filename, sanitized));
+                    task.filename = sanitized;
+                }
+            }
         }
 
         queue.update(task.clone()).await;

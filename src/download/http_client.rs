@@ -23,6 +23,8 @@ pub struct DownloadInfo {
     pub content_type: Option<String>,
     pub auth_required: bool,
     pub auth_realm: Option<String>,
+    /// The final URL after following redirects (if any)
+    pub final_url: Option<String>,
 }
 
 /// Parsed HTTP response headers
@@ -163,6 +165,7 @@ impl HttpClient {
         let parsed = parse_response_headers(response.headers());
         let status = response.status().as_u16();
         let (auth_required, auth_realm) = Self::check_auth_required(status, response.headers());
+        let final_url = Some(response.url().to_string());
 
         Ok(DownloadInfo {
             size: parsed.size,
@@ -175,6 +178,7 @@ impl HttpClient {
             content_type: parsed.content_type,
             auth_required,
             auth_realm,
+            final_url,
         })
     }
 
@@ -249,6 +253,7 @@ impl HttpClient {
         let status = response.status().as_u16();
         let content_type = parsed.content_type;
         let response_headers = parsed.all_headers;
+        let final_url = Some(response.url().to_string());
 
         // Open file for writing (append if resuming, fresh if fallback occurred)
         let file = if actual_resume_from.is_some() {
@@ -312,6 +317,7 @@ impl HttpClient {
             content_type,
             auth_required: false,  // Already checked above, would have returned early if true
             auth_realm: None,
+            final_url,
         })
     }
 
@@ -662,5 +668,102 @@ mod tests {
         let parsed = parse_response_headers(&headers);
 
         assert_eq!(parsed.size, None);
+    }
+
+    #[tokio::test]
+    async fn test_get_info_captures_final_url_on_redirect() {
+        let mock_server = MockServer::start().await;
+
+        // Redirect /original -> /redirected/image.jpg
+        Mock::given(method("HEAD"))
+            .and(path("/original"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .append_header("Location", &format!("{}/redirected/image.jpg", mock_server.uri())),
+            )
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("HEAD"))
+            .and(path("/redirected/image.jpg"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .append_header("Content-Length", "4096"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = HttpClient::new().unwrap();
+        let url = format!("{}/original", mock_server.uri());
+        let info = client.get_info(&url, &Default::default()).await.unwrap();
+
+        assert!(info.final_url.is_some());
+        let final_url = info.final_url.unwrap();
+        assert!(final_url.contains("/redirected/image.jpg"), "final_url should contain redirect destination: {}", final_url);
+        assert_ne!(final_url, url, "final_url should differ from original url on redirect");
+    }
+
+    #[tokio::test]
+    async fn test_get_info_final_url_same_without_redirect() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("HEAD"))
+            .and(path("/direct/file.zip"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .append_header("Content-Length", "2048"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = HttpClient::new().unwrap();
+        let url = format!("{}/direct/file.zip", mock_server.uri());
+        let info = client.get_info(&url, &Default::default()).await.unwrap();
+
+        assert!(info.final_url.is_some());
+        // Without redirect, final_url equals original url
+        assert_eq!(info.final_url.unwrap(), url);
+    }
+
+    #[tokio::test]
+    async fn test_download_captures_final_url_on_redirect() {
+        let mock_server = MockServer::start().await;
+
+        let test_data = b"redirect download content";
+
+        // Redirect /download -> /actual/photo.jpg
+        Mock::given(method("GET"))
+            .and(path("/download"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .append_header("Location", &format!("{}/actual/photo.jpg", mock_server.uri())),
+            )
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/actual/photo.jpg"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(test_data.to_vec())
+                    .append_header("Content-Length", test_data.len().to_string()),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = HttpClient::new().unwrap();
+        let url = format!("{}/download", mock_server.uri());
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("out.bin");
+
+        let info = client
+            .download_to_file(&url, &file_path, &Default::default(), None, None::<fn(u64, Option<u64>)>)
+            .await
+            .unwrap();
+
+        assert!(info.final_url.is_some());
+        let final_url = info.final_url.unwrap();
+        assert!(final_url.contains("/actual/photo.jpg"), "final_url should contain redirect destination: {}", final_url);
     }
 }
