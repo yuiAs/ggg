@@ -99,6 +99,8 @@ pub enum ApplicationSettingsField {
     MaxActiveFolders,
     MaxRedirects,
     RetryCount,
+    UserAgent,
+    ReferrerPolicy,
     ScriptsEnabled,
     SkipDownloadPreview,
     Language,
@@ -113,6 +115,8 @@ impl ApplicationSettingsField {
             Self::MaxActiveFolders,
             Self::MaxRedirects,
             Self::RetryCount,
+            Self::UserAgent,
+            Self::ReferrerPolicy,
             Self::ScriptsEnabled,
             Self::SkipDownloadPreview,
             Self::Language,
@@ -128,6 +132,8 @@ impl ApplicationSettingsField {
             Self::MaxActiveFolders => "settings-app-max-active-folders",
             Self::MaxRedirects => "settings-app-max-redirects",
             Self::RetryCount => "settings-app-retry-count",
+            Self::UserAgent => "settings-app-user-agent",
+            Self::ReferrerPolicy => "settings-app-referrer-policy",
             Self::ScriptsEnabled => "settings-app-scripts-enabled",
             Self::SkipDownloadPreview => "settings-app-skip-download-preview",
             Self::Language => "settings-app-language",
@@ -143,6 +149,8 @@ impl ApplicationSettingsField {
             Self::MaxActiveFolders => "settings-app-max-active-folders-desc",
             Self::MaxRedirects => "settings-app-max-redirects-desc",
             Self::RetryCount => "settings-app-retry-count-desc",
+            Self::UserAgent => "settings-app-user-agent-desc",
+            Self::ReferrerPolicy => "settings-app-referrer-policy-desc",
             Self::ScriptsEnabled => "settings-app-scripts-enabled-desc",
             Self::SkipDownloadPreview => "settings-app-skip-download-preview-desc",
             Self::Language => "settings-app-language-desc",
@@ -160,6 +168,7 @@ pub enum SettingsField {
     FolderScripts,
     FolderMaxConcurrent,
     FolderUserAgent,
+    FolderReferrerPolicy,
     FolderHeaders,
 }
 
@@ -173,6 +182,7 @@ impl SettingsField {
             Self::FolderScripts => "settings-folder-scripts",
             Self::FolderMaxConcurrent => "settings-folder-max-concurrent",
             Self::FolderUserAgent => "settings-folder-user-agent",
+            Self::FolderReferrerPolicy => "settings-folder-referrer-policy",
             Self::FolderHeaders => "settings-folder-headers",
         }
     }
@@ -186,6 +196,7 @@ impl SettingsField {
             Self::FolderScripts => "settings-folder-scripts-desc",
             Self::FolderMaxConcurrent => "settings-folder-max-concurrent-desc",
             Self::FolderUserAgent => "settings-folder-user-agent-desc",
+            Self::FolderReferrerPolicy => "settings-folder-referrer-policy-desc",
             Self::FolderHeaders => "settings-folder-headers-desc",
         }
     }

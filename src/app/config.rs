@@ -4,6 +4,125 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+/// Policy for computing the Referrer header on HTTP requests.
+///
+/// Simple variants serialize as plain strings (`"none"`, `"same_as_url"`, etc.)
+/// while `Custom` serializes as `{ type = "custom", value = "..." }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ReferrerPolicy {
+    /// Simple string variants
+    Simple(ReferrerPolicyKind),
+    /// Custom referrer value: `{ type = "custom", value = "..." }`
+    Custom {
+        #[serde(rename = "type")]
+        kind: CustomTag,
+        value: String,
+    },
+}
+
+/// Tag used to identify the custom variant in TOML
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CustomTag {
+    Custom,
+}
+
+/// Simple referrer policy variants (serialized as lowercase strings)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferrerPolicyKind {
+    /// No Referrer header
+    None,
+    /// Use the full download URL as Referrer
+    SameAsUrl,
+    /// Use the URL path (e.g. `https://foo/bar/` from `https://foo/bar/file.jpg`)
+    UrlPath,
+    /// Use the URL origin (e.g. `https://foo/` from `https://foo/bar/file.jpg`)
+    UrlOrigin,
+}
+
+impl Default for ReferrerPolicy {
+    fn default() -> Self {
+        Self::Simple(ReferrerPolicyKind::None)
+    }
+}
+
+impl ReferrerPolicy {
+    /// Convenience constructors
+    pub fn none() -> Self {
+        Self::Simple(ReferrerPolicyKind::None)
+    }
+    pub fn same_as_url() -> Self {
+        Self::Simple(ReferrerPolicyKind::SameAsUrl)
+    }
+    pub fn url_path() -> Self {
+        Self::Simple(ReferrerPolicyKind::UrlPath)
+    }
+    pub fn url_origin() -> Self {
+        Self::Simple(ReferrerPolicyKind::UrlOrigin)
+    }
+    pub fn custom(value: impl Into<String>) -> Self {
+        Self::Custom {
+            kind: CustomTag::Custom,
+            value: value.into(),
+        }
+    }
+
+    /// Compute the actual Referrer header value for a given download URL.
+    /// Returns `None` for the `None` policy or if the URL is invalid.
+    pub fn compute(&self, url: &str) -> Option<String> {
+        match self {
+            Self::Simple(ReferrerPolicyKind::None) => Option::None,
+            Self::Simple(ReferrerPolicyKind::SameAsUrl) => Some(url.to_string()),
+            Self::Simple(ReferrerPolicyKind::UrlPath) => {
+                let parsed = url::Url::parse(url).ok()?;
+                let path = parsed.path();
+                // Strip the last path segment (filename)
+                let parent = match path.rfind('/') {
+                    Some(pos) => &path[..=pos],
+                    Option::None => "/",
+                };
+                Some(format!("{}://{}{}", parsed.scheme(), parsed.authority(), parent))
+            }
+            Self::Simple(ReferrerPolicyKind::UrlOrigin) => {
+                let parsed = url::Url::parse(url).ok()?;
+                Some(parsed.origin().ascii_serialization() + "/")
+            }
+            Self::Custom { value, .. } => {
+                if value.is_empty() {
+                    Option::None
+                } else {
+                    Some(value.clone())
+                }
+            }
+        }
+    }
+
+    /// Get the next policy in the cycle (for TUI editing).
+    /// Cycle: None → SameAsUrl → UrlPath → UrlOrigin → None
+    /// Custom is not included in the cycle; it is set separately.
+    pub fn cycle_next(&self) -> Self {
+        match self {
+            Self::Simple(ReferrerPolicyKind::None) => Self::same_as_url(),
+            Self::Simple(ReferrerPolicyKind::SameAsUrl) => Self::url_path(),
+            Self::Simple(ReferrerPolicyKind::UrlPath) => Self::url_origin(),
+            Self::Simple(ReferrerPolicyKind::UrlOrigin) | Self::Custom { .. } => Self::none(),
+        }
+    }
+
+    /// Get a display label key for i18n
+    pub fn display_key(&self) -> &str {
+        match self {
+            Self::Simple(ReferrerPolicyKind::None) => "settings-referrer-none",
+            Self::Simple(ReferrerPolicyKind::SameAsUrl) => "settings-referrer-same-as-url",
+            Self::Simple(ReferrerPolicyKind::UrlPath) => "settings-referrer-url-path",
+            Self::Simple(ReferrerPolicyKind::UrlOrigin) => "settings-referrer-url-origin",
+            Self::Custom { .. } => "settings-referrer-custom",
+        }
+    }
+}
+
 /// Application-level configuration (saved to config/settings.toml)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplicationConfig {
@@ -59,6 +178,8 @@ pub struct DownloadConfig {
     pub parallel_folder_count: Option<usize>,
     #[serde(default = "default_max_redirects")]
     pub max_redirects: u32,
+    #[serde(default)]
+    pub referrer_policy: ReferrerPolicy,
 }
 
 fn default_max_redirects() -> u32 {
@@ -106,6 +227,8 @@ pub struct FolderConfig {
     #[serde(default)]
     pub user_agent: Option<String>,
     #[serde(default)]
+    pub referrer_policy: Option<ReferrerPolicy>,
+    #[serde(default)]
     pub default_headers: HashMap<String, String>,
 }
 
@@ -120,6 +243,7 @@ impl Default for FolderConfig {
             script_files: None,
             max_concurrent: None,
             user_agent: None,
+            referrer_policy: None,
             default_headers: HashMap::new(),
         }
     }
@@ -156,6 +280,7 @@ impl Default for Config {
                 max_concurrent_per_folder: None,
                 parallel_folder_count: None,
                 max_redirects: 5,
+                referrer_policy: ReferrerPolicy::default(),
             },
             network: NetworkConfig {
                 proxy_enabled: false,
@@ -253,6 +378,7 @@ impl Config {
                     script_files: None,
                     max_concurrent: None,
                     user_agent: None,
+                    referrer_policy: None,
                     default_headers: HashMap::new(),
                 },
             );
@@ -355,6 +481,7 @@ impl Config {
                     max_concurrent_per_folder: None,
                     parallel_folder_count: None,
                     max_redirects: 5,
+                    referrer_policy: ReferrerPolicy::default(),
                 },
                 network: NetworkConfig {
                     proxy_enabled: false,
@@ -799,6 +926,7 @@ timeout = 60
                 max_concurrent_per_folder: Some(2),
                 parallel_folder_count: Some(2),
                 max_redirects: 10,
+                referrer_policy: ReferrerPolicy::default(),
             },
             network: NetworkConfig {
                 proxy_enabled: false,
@@ -853,6 +981,7 @@ timeout = 60
             script_files: None,     // Should inherit from app
             max_concurrent: None,   // Should inherit from app
             user_agent: None,       // Should inherit from app
+            referrer_policy: None,  // Should inherit from app
             default_headers: HashMap::new(),
         };
 
@@ -947,5 +1076,125 @@ auto_start_downloads = false
         assert!(!folders.contains_key(".logs"));
         assert!(!folders.contains_key("scripts"));
         assert!(!folders.contains_key("empty_dir"));
+    }
+
+    #[test]
+    fn test_referrer_policy_serde_roundtrip() {
+        #[derive(Serialize, Deserialize, Debug)]
+        struct W {
+            policy: ReferrerPolicy,
+        }
+
+        // All simple variants: deserialize from string
+        for (input, expected) in [
+            ("\"none\"", ReferrerPolicy::none()),
+            ("\"same_as_url\"", ReferrerPolicy::same_as_url()),
+            ("\"url_path\"", ReferrerPolicy::url_path()),
+            ("\"url_origin\"", ReferrerPolicy::url_origin()),
+        ] {
+            let toml_str = format!("policy = {}\n", input);
+            let w: W = toml::from_str(&toml_str).unwrap();
+            assert_eq!(w.policy, expected, "Deserialize failed for input: {}", input);
+
+            // Roundtrip: serialize and deserialize back
+            let serialized = toml::to_string_pretty(&w).unwrap();
+            let rt: W = toml::from_str(&serialized).unwrap();
+            assert_eq!(rt.policy, expected, "Roundtrip failed for input: {}", input);
+        }
+
+        // Custom variant: deserialize from table
+        let toml_str = "[policy]\ntype = \"custom\"\nvalue = \"https://example.com\"\n";
+        let w: W = toml::from_str(toml_str).unwrap();
+        assert_eq!(w.policy, ReferrerPolicy::custom("https://example.com"));
+
+        // Custom roundtrip
+        let serialized = toml::to_string_pretty(&w).unwrap();
+        let rt: W = toml::from_str(&serialized).unwrap();
+        assert_eq!(rt.policy, ReferrerPolicy::custom("https://example.com"));
+    }
+
+    #[test]
+    fn test_referrer_policy_compute() {
+        let url = "https://example.com/images/photo.jpg";
+
+        // None → no referrer
+        assert_eq!(ReferrerPolicy::none().compute(url), None);
+
+        // SameAsUrl → full URL
+        assert_eq!(
+            ReferrerPolicy::same_as_url().compute(url),
+            Some(url.to_string())
+        );
+
+        // UrlPath → parent path
+        assert_eq!(
+            ReferrerPolicy::url_path().compute(url),
+            Some("https://example.com/images/".to_string())
+        );
+
+        // UrlOrigin → origin only
+        assert_eq!(
+            ReferrerPolicy::url_origin().compute(url),
+            Some("https://example.com/".to_string())
+        );
+
+        // Custom → literal value
+        assert_eq!(
+            ReferrerPolicy::custom("https://custom.ref/page").compute(url),
+            Some("https://custom.ref/page".to_string())
+        );
+
+        // Custom empty → None
+        assert_eq!(ReferrerPolicy::custom("").compute(url), None);
+    }
+
+    #[test]
+    fn test_referrer_policy_compute_edge_cases() {
+        // URL with port
+        assert_eq!(
+            ReferrerPolicy::url_origin().compute("https://example.com:8443/path/file.txt"),
+            Some("https://example.com:8443/".to_string())
+        );
+
+        // URL with no path segments
+        assert_eq!(
+            ReferrerPolicy::url_path().compute("https://example.com/file.txt"),
+            Some("https://example.com/".to_string())
+        );
+
+        // Invalid URL
+        assert_eq!(
+            ReferrerPolicy::url_origin().compute("not-a-url"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_referrer_policy_cycle() {
+        let p = ReferrerPolicy::none();
+        let p = p.cycle_next();
+        assert_eq!(p, ReferrerPolicy::same_as_url());
+        let p = p.cycle_next();
+        assert_eq!(p, ReferrerPolicy::url_path());
+        let p = p.cycle_next();
+        assert_eq!(p, ReferrerPolicy::url_origin());
+        let p = p.cycle_next();
+        assert_eq!(p, ReferrerPolicy::none());
+    }
+
+    #[test]
+    fn test_referrer_policy_backward_compat() {
+        // Existing config without referrer_policy should deserialize fine
+        let toml_str = r#"
+default_directory = "C:\\Downloads"
+max_concurrent = 3
+retry_count = 3
+retry_delay = 5
+user_agent = "Test/1.0"
+bandwidth_limit = 0
+max_redirects = 5
+"#;
+        let config: DownloadConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.referrer_policy, ReferrerPolicy::default());
     }
 }

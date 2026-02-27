@@ -20,6 +20,10 @@ settings-app-skip-download-preview = ダウンロードプレビューをスキ�
 settings-app-skip-download-preview-desc = プレビューダイアログをスキップして即座にダウンロードを追加
 settings-app-auto-launch-dnd = ggg-dnd 自動起動
 settings-app-auto-launch-dnd-desc = 起動時にドラッグ＆ドロップ補助ツール ggg-dnd を自動起動（Windows専用）
+settings-app-user-agent = ユーザーエージェント
+settings-app-user-agent-desc = HTTPリクエストのデフォルトUser-Agentヘッダー
+settings-app-referrer-policy = リファラーポリシー
+settings-app-referrer-policy-desc = ダウンロードのデフォルトReferrerヘッダーポリシー
 
 # Folder Settings Fields
 settings-folder-save-path = 保存パス
@@ -34,6 +38,8 @@ settings-folder-max-concurrent = 最大同時数
 settings-folder-max-concurrent-desc = このフォルダの同時ダウンロード数の上限
 settings-folder-user-agent = ユーザーエージェント
 settings-folder-user-agent-desc = このフォルダ用のカスタムUser-Agentヘッダー
+settings-folder-referrer-policy = リファラーポリシー
+settings-folder-referrer-policy-desc = このフォルダのReferrerヘッダーポリシー上書き
 settings-folder-headers = ヘッダー
 settings-folder-headers-desc = このフォルダ用のカスタムHTTPヘッダー
 
@@ -54,6 +60,13 @@ settings-value-not-set = 未設定
 settings-value-inherit = アプリから継承
 settings-value-enabled-override = 有効 (上書き)
 settings-value-disabled-override = 無効 (上書き)
+
+# Referrer Policy Values
+settings-referrer-none = なし
+settings-referrer-same-as-url = URLと同じ
+settings-referrer-url-path = URLパス部分
+settings-referrer-url-origin = URLサーバー部分
+settings-referrer-custom = カスタム
 
 # Settings Screen Sections
 settings-section-application = アプリケーション設定

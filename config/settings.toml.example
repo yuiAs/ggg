@@ -58,6 +58,11 @@ user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 # Bandwidth limit in bytes per second (0 = unlimited)
 bandwidth_limit = 0
 
+# Referrer header policy for downloads
+# Options: "none" (default), "same_as_url", "url_path", "url_origin"
+# Custom: { type = "custom", value = "https://example.com" }
+# referrer_policy = "none"
+
 
 # ============================================================================
 # Network Settings
@@ -121,6 +126,7 @@ timeout = 30
 # scripts_enabled = true
 # max_concurrent = 5
 # user_agent = "CustomAgent/1.0"
+# referrer_policy = "url_origin"
 #
 # [folder.default_headers]
 # Referer = "https://example.com"

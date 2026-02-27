@@ -1,4 +1,5 @@
 use crate::AppState;
+use crate::app::config::ReferrerPolicy;
 use crate::download::{manager::DownloadManager, task::DownloadTask};
 use fluent::fluent_args;
 use serde::{Deserialize, Serialize};
@@ -26,9 +27,13 @@ pub enum Command {
     UpdateSkipDownloadPreview { value: bool },
     UpdateAutoLaunchDnd { value: bool },
     UpdateLanguage { value: String },
+    UpdateUserAgent { value: String },
+    UpdateReferrerPolicy { policy: ReferrerPolicy },
 
     // Folder-level settings
     UpdateFolderMaxConcurrent { folder_id: String, value: Option<usize> },
+    UpdateFolderUserAgent { folder_id: String, value: Option<String> },
+    UpdateFolderReferrerPolicy { folder_id: String, policy: Option<ReferrerPolicy> },
 
     // Script settings
     ToggleScriptFile { filename: String },
@@ -346,6 +351,38 @@ pub async fn handle_command(
             }
         }
 
+        Command::UpdateUserAgent { value } => {
+            let mut config = state.config.write().await;
+            config.download.user_agent = value.clone();
+
+            if let Err(e) = config.save() {
+                return CommandResponse::Error {
+                    error: state.t_with_args("cmd-error-save-config",
+                        Some(&fluent_args!["error" => e.to_string()])),
+                };
+            }
+
+            CommandResponse::Success {
+                data: serde_json::json!({"status": "ok", "value": value}),
+            }
+        }
+
+        Command::UpdateReferrerPolicy { policy } => {
+            let mut config = state.config.write().await;
+            config.download.referrer_policy = policy.clone();
+
+            if let Err(e) = config.save() {
+                return CommandResponse::Error {
+                    error: state.t_with_args("cmd-error-save-config",
+                        Some(&fluent_args!["error" => e.to_string()])),
+                };
+            }
+
+            CommandResponse::Success {
+                data: serde_json::json!({"status": "ok"}),
+            }
+        }
+
         Command::UpdateFolderMaxConcurrent { folder_id, value } => {
             let mut config = state.config.write().await;
 
@@ -376,6 +413,50 @@ pub async fn handle_command(
 
             CommandResponse::Success {
                 data: serde_json::json!({"status": "ok", "folder_id": folder_id, "value": value}),
+            }
+        }
+
+        Command::UpdateFolderUserAgent { folder_id, value } => {
+            let mut config = state.config.write().await;
+
+            let folder_config = config
+                .folders
+                .entry(folder_id.clone())
+                .or_insert_with(crate::app::config::FolderConfig::default);
+
+            folder_config.user_agent = value.clone();
+
+            if let Err(e) = config.save() {
+                return CommandResponse::Error {
+                    error: state.t_with_args("cmd-error-save-config",
+                        Some(&fluent_args!["error" => e.to_string()])),
+                };
+            }
+
+            CommandResponse::Success {
+                data: serde_json::json!({"status": "ok", "folder_id": folder_id}),
+            }
+        }
+
+        Command::UpdateFolderReferrerPolicy { folder_id, policy } => {
+            let mut config = state.config.write().await;
+
+            let folder_config = config
+                .folders
+                .entry(folder_id.clone())
+                .or_insert_with(crate::app::config::FolderConfig::default);
+
+            folder_config.referrer_policy = policy;
+
+            if let Err(e) = config.save() {
+                return CommandResponse::Error {
+                    error: state.t_with_args("cmd-error-save-config",
+                        Some(&fluent_args!["error" => e.to_string()])),
+                };
+            }
+
+            CommandResponse::Success {
+                data: serde_json::json!({"status": "ok", "folder_id": folder_id}),
             }
         }
 

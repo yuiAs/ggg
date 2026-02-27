@@ -20,6 +20,10 @@ settings-app-skip-download-preview = Skip Download Preview
 settings-app-skip-download-preview-desc = Skip preview dialog and add downloads immediately
 settings-app-auto-launch-dnd = Auto Launch ggg-dnd
 settings-app-auto-launch-dnd-desc = Auto-launch ggg-dnd drag & drop helper on startup (Windows only)
+settings-app-user-agent = User Agent
+settings-app-user-agent-desc = Default User-Agent header for HTTP requests
+settings-app-referrer-policy = Referrer Policy
+settings-app-referrer-policy-desc = Default Referrer header policy for downloads
 
 # Folder Settings Fields
 settings-folder-save-path = Save Path
@@ -34,6 +38,8 @@ settings-folder-max-concurrent = Max Concurrent
 settings-folder-max-concurrent-desc = Concurrent download limit for this folder
 settings-folder-user-agent = User Agent
 settings-folder-user-agent-desc = Custom User-Agent header for this folder
+settings-folder-referrer-policy = Referrer Policy
+settings-folder-referrer-policy-desc = Referrer header policy override for this folder
 settings-folder-headers = Headers
 settings-folder-headers-desc = Custom HTTP headers for this folder
 
@@ -54,6 +60,13 @@ settings-value-not-set = Not set
 settings-value-inherit = Inherit from app
 settings-value-enabled-override = Enabled (override)
 settings-value-disabled-override = Disabled (override)
+
+# Referrer Policy Values
+settings-referrer-none = None
+settings-referrer-same-as-url = Same as URL
+settings-referrer-url-path = URL Path
+settings-referrer-url-origin = URL Origin
+settings-referrer-custom = Custom
 
 # Settings Screen Sections
 settings-section-application = Application Settings

@@ -1,4 +1,4 @@
-use super::config::{Config, FolderConfig};
+use super::config::{Config, FolderConfig, ReferrerPolicy};
 use crate::download::task::DownloadTask;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,6 +13,7 @@ pub struct ResolvedSettings {
     pub scripts_enabled: bool,
     pub retry_count: u32,
     pub max_redirects: u32,
+    pub referrer_policy: ReferrerPolicy,
 }
 
 impl ResolvedSettings {
@@ -46,6 +47,11 @@ impl ResolvedSettings {
         // Resolve scripts_enabled with validation
         let scripts_enabled = Self::resolve_scripts_enabled(config, folder_config);
 
+        // Resolve referrer_policy: folder > app
+        let referrer_policy = folder_config
+            .and_then(|f| f.referrer_policy.clone())
+            .unwrap_or_else(|| config.download.referrer_policy.clone());
+
         Self {
             save_path,
             user_agent,
@@ -54,6 +60,7 @@ impl ResolvedSettings {
             scripts_enabled,
             retry_count: config.download.retry_count,
             max_redirects: config.download.max_redirects,
+            referrer_policy,
         }
     }
 
@@ -242,6 +249,7 @@ mod tests {
                 max_concurrent_per_folder: Some(2),
                 parallel_folder_count: Some(2),
                 max_redirects: 10,
+                referrer_policy: ReferrerPolicy::default(),
             },
             network: NetworkConfig {
                 proxy_enabled: false,
@@ -306,6 +314,7 @@ mod tests {
                 script_files: None,
                 max_concurrent: None,
                 user_agent: Some("FolderAgent/1.0".to_string()),
+                referrer_policy: None,
                 default_headers: HashMap::new(),
             },
         );
@@ -340,6 +349,7 @@ mod tests {
                 script_files: None,
                 max_concurrent: None,
                 user_agent: Some("FolderAgent/1.0".to_string()),
+                referrer_policy: None,
                 default_headers: HashMap::new(),
             },
         );
@@ -391,6 +401,7 @@ mod tests {
                 script_files: None,
                 max_concurrent: None,
                 user_agent: None,
+                referrer_policy: None,
                 default_headers: HashMap::new(),
             },
         );
@@ -429,6 +440,7 @@ mod tests {
                 script_files: None,
                 max_concurrent: None,
                 user_agent: None,
+                referrer_policy: None,
                 default_headers: HashMap::new(),
             },
         );
@@ -462,6 +474,7 @@ mod tests {
                 script_files: None,
                 max_concurrent: None,
                 user_agent: None,
+                referrer_policy: None,
                 default_headers: HashMap::new(),
             },
         );
@@ -477,6 +490,7 @@ mod tests {
                 script_files: None,
                 max_concurrent: None,
                 user_agent: None,
+                referrer_policy: None,
                 default_headers: HashMap::new(),
             },
         );
@@ -505,6 +519,7 @@ mod tests {
                 script_files: None,
                 max_concurrent: None,
                 user_agent: None,
+                referrer_policy: None,
                 default_headers: folder_headers,
             },
         );
@@ -545,6 +560,7 @@ mod tests {
                 script_files: None,
                 max_concurrent: Some(2),
                 user_agent: None,
+                referrer_policy: None,
                 default_headers: HashMap::new(),
             },
         );
@@ -561,6 +577,7 @@ mod tests {
                 script_files: None,
                 max_concurrent: None,
                 user_agent: None,
+                referrer_policy: None,
                 default_headers: HashMap::new(),
             },
         );

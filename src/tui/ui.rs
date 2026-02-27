@@ -999,11 +999,23 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
                 ApplicationSettingsField::RetryCount => {
                     config.download.retry_count.to_string()
                 }
+                ApplicationSettingsField::UserAgent => {
+                    config.download.user_agent.clone()
+                }
+                ApplicationSettingsField::ReferrerPolicy => {
+                    use crate::app::config::ReferrerPolicy;
+                    match &config.download.referrer_policy {
+                        ReferrerPolicy::Custom { value, .. } => {
+                            format!("{}: {}", app.state.t("settings-referrer-custom"), value)
+                        }
+                        other => app.state.t(other.display_key()),
+                    }
+                }
                 ApplicationSettingsField::ScriptsEnabled => {
-                    if config.scripts.enabled { 
-                        app.state.t("settings-value-enabled") 
-                    } else { 
-                        app.state.t("settings-value-disabled") 
+                    if config.scripts.enabled {
+                        app.state.t("settings-value-enabled")
+                    } else {
+                        app.state.t("settings-value-disabled")
                     }
                 }
                 ApplicationSettingsField::SkipDownloadPreview => {
@@ -1385,13 +1397,28 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
                     .unwrap_or_else(|| app.state.t("settings-value-inherit"));
                 detail_lines.push(make_field_line(5, &app.state.t("settings-folder-user-agent"), user_agent_str));
 
-                // Field 6: Headers
+                // Field 6: Referrer Policy
+                let referrer_policy_str = match &folder_config.referrer_policy {
+                    Some(policy) => {
+                        use crate::app::config::ReferrerPolicy;
+                        match policy {
+                            ReferrerPolicy::Custom { value, .. } => {
+                                format!("{}: {}", app.state.t("settings-referrer-custom"), value)
+                            }
+                            other => app.state.t(other.display_key()),
+                        }
+                    }
+                    None => app.state.t("settings-value-inherit"),
+                };
+                detail_lines.push(make_field_line(6, &app.state.t("settings-folder-referrer-policy"), referrer_policy_str));
+
+                // Field 7: Headers
                 let headers_str = if folder_config.default_headers.is_empty() {
                     app.state.t("settings-value-not-set")
                 } else {
                     format!("{} headers", folder_config.default_headers.len())
                 };
-                detail_lines.push(make_field_line(6, &app.state.t("settings-folder-headers"), headers_str));
+                detail_lines.push(make_field_line(7, &app.state.t("settings-folder-headers"), headers_str));
 
                 // Show headers details if not empty
                 if !folder_config.default_headers.is_empty() {

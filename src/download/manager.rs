@@ -467,10 +467,22 @@ impl DownloadManager {
         // Compute effective script_files (Application + Folder override)
         let effective_script_files = Self::compute_effective_script_files(&config, &task.folder_id).await;
 
+        // Resolve referrer from policy (folder > app), unless task.headers already has one
+        let has_task_referer = task.headers.keys().any(|k| k.eq_ignore_ascii_case("referer"));
+        let policy_referer = if has_task_referer {
+            None
+        } else {
+            let cfg = config.read().await;
+            let policy = cfg.folders.get(&task.folder_id)
+                .and_then(|f| f.referrer_policy.clone())
+                .unwrap_or_else(|| cfg.download.referrer_policy.clone());
+            policy.compute(&task.url)
+        };
+
         // Build headers
         let headers = HttpClient::build_headers(
             task.user_agent.as_deref(),
-            None, // referer handled via task.headers
+            policy_referer.as_deref(),
             &task.headers,
         )?;
 
@@ -533,7 +545,7 @@ impl DownloadManager {
                             // Retry get_info with auth
                             let headers = HttpClient::build_headers(
                                 task.user_agent.as_deref(),
-                                None,
+                                policy_referer.as_deref(),
                                 &task.headers,
                             )?;
 
@@ -732,7 +744,7 @@ impl DownloadManager {
         // Rebuild headers to include any auth header from authRequired hook
         let headers = HttpClient::build_headers(
             task.user_agent.as_deref(),
-            None,
+            policy_referer.as_deref(),
             &task.headers,
         )?;
 

@@ -1080,6 +1080,7 @@ async fn handle_folder_create(
         script_files: None,
         max_concurrent: None,
         user_agent: None,
+        referrer_policy: None,
         default_headers: HashMap::new(),
     };
 

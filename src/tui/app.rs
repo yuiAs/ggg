@@ -1233,7 +1233,7 @@ impl TuiApp {
                     }
                 } else {
                     // Navigate fields
-                    let field_count = 6; // save_path, auto_date, scripts, max_concurrent, user_agent, headers
+                    let field_count = 8; // save_path, auto_date, auto_start, scripts, max_concurrent, user_agent, referrer_policy, headers
                     self.state.move_field_selection_down(field_count);
                 }
             }
@@ -1427,7 +1427,8 @@ impl TuiApp {
             3 => SettingsField::FolderScripts,
             4 => SettingsField::FolderMaxConcurrent,
             5 => SettingsField::FolderUserAgent,
-            6 => SettingsField::FolderHeaders,
+            6 => SettingsField::FolderReferrerPolicy,
+            7 => SettingsField::FolderHeaders,
             _ => return Ok(()),
         };
 
@@ -1455,6 +1456,11 @@ impl TuiApp {
                 // Text/number input - populate input buffer with current value
                 self.populate_input_buffer_for_field(selected_field).await;
                 // Keep settings_edit_field set to show input dialog
+            }
+            SettingsField::FolderReferrerPolicy => {
+                // Cycle: None(inherit) → Some(None) → Some(SameAsUrl) → Some(UrlPath) → Some(UrlOrigin) → None(inherit)
+                self.cycle_folder_referrer_policy().await?;
+                self.state.settings_edit_field = None;
             }
             SettingsField::FolderHeaders => {
                 // Complex field - for now, just show a message
@@ -1518,6 +1524,45 @@ impl TuiApp {
         Ok(())
     }
 
+    /// Cycle folder referrer policy: None(inherit) → Some(None) → Some(SameAsUrl) → Some(UrlPath) → Some(UrlOrigin) → None(inherit)
+    async fn cycle_folder_referrer_policy(&mut self) -> Result<()> {
+        use crate::app::config::ReferrerPolicy;
+        use crate::ui::commands::{Command, handle_command};
+
+        if let Some(ref folder_id) = self.state.selected_folder_id {
+            let config = self.state.app_state.config.read().await;
+            let current = config.folders.get(folder_id).and_then(|f| f.referrer_policy.clone());
+            drop(config);
+
+            let next = match current {
+                None => Some(ReferrerPolicy::none()),
+                Some(ref p) => {
+                    let cycled = p.cycle_next();
+                    // If cycled back to None, that means we've gone through all options → inherit
+                    if cycled == ReferrerPolicy::none() {
+                        None // Back to inherit
+                    } else {
+                        Some(cycled)
+                    }
+                }
+            };
+
+            let command = Command::UpdateFolderReferrerPolicy {
+                folder_id: folder_id.clone(),
+                policy: next,
+            };
+            handle_command(
+                command,
+                self.state.app_state.clone(),
+                self.manager.clone(),
+            )
+            .await;
+
+            tracing::info!("Cycled folder referrer policy for '{}'", folder_id);
+        }
+        Ok(())
+    }
+
     /// Toggle scripts enabled at application level
     async fn toggle_app_scripts_enabled(&mut self) -> Result<()> {
         use crate::ui::commands::{Command, handle_command};
@@ -1575,6 +1620,26 @@ impl TuiApp {
         .await;
 
         tracing::info!("Toggled auto launch dnd to {}", new_value);
+        Ok(())
+    }
+
+    /// Cycle through referrer policy options at application level
+    async fn cycle_app_referrer_policy(&mut self) -> Result<()> {
+        use crate::ui::commands::{Command, handle_command};
+
+        let config = self.state.app_state.config.read().await;
+        let next_policy = config.download.referrer_policy.cycle_next();
+        drop(config);
+
+        let command = Command::UpdateReferrerPolicy { policy: next_policy };
+        handle_command(
+            command,
+            self.state.app_state.clone(),
+            self.manager.clone(),
+        )
+        .await;
+
+        tracing::info!("Cycled app referrer policy");
         Ok(())
     }
 
@@ -2112,6 +2177,7 @@ impl TuiApp {
             script_files: None,
             max_concurrent: None,
             user_agent: None,
+            referrer_policy: None,
             default_headers: std::collections::HashMap::new(),
         };
 
@@ -2297,6 +2363,11 @@ impl TuiApp {
                 self.toggle_app_auto_launch_dnd().await?;
                 return Ok(());
             }
+            ApplicationSettingsField::ReferrerPolicy => {
+                // Cycle through referrer policy options
+                self.cycle_app_referrer_policy().await?;
+                return Ok(());
+            }
             _ => {
                 // Continue with normal text input for other fields
             }
@@ -2329,11 +2400,14 @@ impl TuiApp {
             ApplicationSettingsField::RetryCount => {
                 config.download.retry_count.to_string()
             }
+            ApplicationSettingsField::UserAgent => {
+                config.download.user_agent.clone()
+            }
             ApplicationSettingsField::Language => {
                 config.general.language.clone()
             }
-            ApplicationSettingsField::ScriptsEnabled | ApplicationSettingsField::SkipDownloadPreview | ApplicationSettingsField::AutoLaunchDnd => {
-                // These are handled above as toggles
+            ApplicationSettingsField::ScriptsEnabled | ApplicationSettingsField::SkipDownloadPreview | ApplicationSettingsField::AutoLaunchDnd | ApplicationSettingsField::ReferrerPolicy => {
+                // These are handled above as toggles/cycles
                 unreachable!()
             }
         };
@@ -2433,10 +2507,12 @@ impl TuiApp {
                     return Ok(());
                 }
             }
-            ApplicationSettingsField::ScriptsEnabled | ApplicationSettingsField::SkipDownloadPreview | ApplicationSettingsField::AutoLaunchDnd => {
-                // These are now handled as toggles in start_app_settings_edit()
-                // This branch should never be reached
-                unreachable!("Toggle fields are handled in start_app_settings_edit()")
+            ApplicationSettingsField::UserAgent => {
+                Command::UpdateUserAgent { value: value_str.to_string() }
+            }
+            ApplicationSettingsField::ScriptsEnabled | ApplicationSettingsField::SkipDownloadPreview | ApplicationSettingsField::AutoLaunchDnd | ApplicationSettingsField::ReferrerPolicy => {
+                // These are now handled as toggles/cycles in start_app_settings_edit()
+                unreachable!("Toggle/cycle fields are handled in start_app_settings_edit()")
             }
             ApplicationSettingsField::Language => {
                 let value = value_str.to_lowercase();
