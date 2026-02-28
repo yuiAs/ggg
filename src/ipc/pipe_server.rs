@@ -81,7 +81,7 @@ async fn accept_loop(pipe_name: &str, event_tx: mpsc::Sender<IpcEvent>) {
             continue;
         }
 
-        tracing::info!("IPC client connected on {}", pipe_name);
+        tracing::debug!("IPC client connected on {}", pipe_name);
 
         let tx = event_tx.clone();
         tokio::spawn(async move {
@@ -133,7 +133,7 @@ async fn handle_client(
         }
     }
 
-    tracing::info!("IPC client disconnected");
+    tracing::debug!("IPC client disconnected");
 }
 
 /// Process a single IPC request and return the appropriate response.
