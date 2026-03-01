@@ -8,6 +8,7 @@ dialog-edit-field = フィールドを編集
 dialog-edit-label = {$label}を編集
 dialog-add-download = ダウンロードを追加 (Shift+Enterで[n-m]を展開)
 dialog-change-save-path = 保存パスを変更 (Enterで確定、Escでキャンセル)
+dialog-change-folder = 📁 フォルダを変更 (j/kで移動、Enterで選択)
 dialog-confirm-delete = 削除の確認
 dialog-switch-folder = 📁 フォルダを選択 (j/kで移動、Enterで選択)
 dialog-actions = アクションメニュー (j/kで移動、Enterで選択)

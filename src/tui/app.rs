@@ -127,7 +127,8 @@ impl TuiApp {
                     UiMode::Help => self.handle_help_mode(code),
                     UiMode::Settings => self.handle_settings_mode(code).await?,
                     UiMode::FolderEdit => self.handle_folder_edit_mode(code, modifiers).await?,
-                    UiMode::ChangeFolder => self.handle_change_folder_mode(code, modifiers).await?,
+                    UiMode::ChangeFolder => self.handle_change_folder_for_item_mode(code).await?,
+                    UiMode::ChangeSavePath => self.handle_change_save_path_mode(code, modifiers).await?,
                     UiMode::SwitchFolder => self.handle_switch_folder_mode(code).await?,
                     UiMode::ConfirmDelete => self.handle_confirm_delete_mode(code).await?,
                     UiMode::ContextMenu => self.handle_context_menu_mode(code).await?,
@@ -167,7 +168,7 @@ impl TuiApp {
                             tracing::debug!("Paste ignored in mode {:?}: not a valid download URL", self.state.ui_mode);
                         }
                         // Future: may add to input buffer for specific modes, e.g.:
-                        // UiMode::Search | UiMode::ChangeFolder => {
+                        // UiMode::Search | UiMode::ChangeSavePath => {
                         //     self.state.input_buffer.push_str(&text_to_add);
                         // }
                     }
@@ -703,7 +704,9 @@ impl TuiApp {
                     return Ok(());
                 }
                 KeyAction::EditItem => {
-                    self.state.ui_mode = UiMode::ChangeFolder;
+                    // TODO: Expand to a multi-field editor supporting Referrer,
+                    //       Cookie, and other per-item properties.
+                    self.state.ui_mode = UiMode::ChangeSavePath;
                     self.state.input_buffer.clear();
                     return Ok(());
                 }
@@ -1666,8 +1669,56 @@ impl TuiApp {
         }
     }
 
-    /// Handle change folder mode
-    async fn handle_change_folder_mode(&mut self, key: KeyCode, mods: KeyModifiers) -> Result<()> {
+    /// Handle change folder mode (folder picker for changing item's application folder)
+    async fn handle_change_folder_for_item_mode(&mut self, key: KeyCode) -> Result<()> {
+        let config = self.state.app_state.config.read().await;
+        let folder_entries = config.sorted_folder_entries();
+        let folder_count = folder_entries.len();
+        drop(config);
+
+        match key {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if folder_count > 0 {
+                    self.state.folder_picker_index =
+                        (self.state.folder_picker_index + 1) % folder_count;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if folder_count > 0 {
+                    self.state.folder_picker_index = if self.state.folder_picker_index == 0 {
+                        folder_count - 1
+                    } else {
+                        self.state.folder_picker_index - 1
+                    };
+                }
+            }
+            KeyCode::Enter => {
+                if folder_count > 0 && self.state.folder_picker_index < folder_count {
+                    let (folder_id, _display_name) = &folder_entries[self.state.folder_picker_index];
+                    if let Some(task) = self.state.get_selected_download() {
+                        if let Err(e) = self
+                            .manager
+                            .change_folder(task.id, folder_id.clone())
+                            .await
+                        {
+                            tracing::warn!("Failed to change folder: {}", e);
+                        } else {
+                            self.save_queue().await?;
+                        }
+                    }
+                }
+                self.state.ui_mode = UiMode::Normal;
+            }
+            KeyCode::Esc => {
+                self.state.ui_mode = UiMode::Normal;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Handle change save path mode (free text input for filesystem path)
+    async fn handle_change_save_path_mode(&mut self, key: KeyCode, mods: KeyModifiers) -> Result<()> {
         // Handle Ctrl+u first (before Char match)
         if matches!(key, KeyCode::Char('u')) && mods.contains(KeyModifiers::CONTROL) {
             self.state.input_buffer.clear();
@@ -1692,7 +1743,6 @@ impl TuiApp {
 
                         // Change the save path
                         if let Err(e) = self.manager.change_save_path(task.id, new_path).await {
-                            // Store error message for display (future enhancement)
                             tracing::warn!("Failed to change path: {}", e);
                         } else {
                             self.save_queue().await?;
@@ -1840,11 +1890,11 @@ impl TuiApp {
                 self.state.ui_mode = UiMode::ConfirmDelete;
             }
             ContextMenuAction::ChangeFolder => {
+                self.state.folder_picker_index = 0;
                 self.state.ui_mode = UiMode::ChangeFolder;
-                self.state.input_buffer.clear();
             }
             ContextMenuAction::ChangeSavePath => {
-                self.state.ui_mode = UiMode::ChangeFolder;
+                self.state.ui_mode = UiMode::ChangeSavePath;
                 self.state.input_buffer.clear();
             }
             ContextMenuAction::CopyUrl => {

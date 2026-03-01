@@ -21,8 +21,10 @@ pub enum UiMode {
     DownloadPreview,
     /// Searching/filtering downloads
     Search,
-    /// Changing folder for selected download
+    /// Changing application folder for selected download (folder picker)
     ChangeFolder,
+    /// Changing save path for selected download (free text input)
+    ChangeSavePath,
     /// Switching current folder for new downloads
     SwitchFolder,
     /// Help screen overlay
@@ -46,7 +48,7 @@ impl UiMode {
     pub fn is_text_input(&self) -> bool {
         matches!(
             self,
-            UiMode::AddDownload | UiMode::EditingField | UiMode::Search | UiMode::FolderEdit
+            UiMode::AddDownload | UiMode::EditingField | UiMode::Search | UiMode::FolderEdit | UiMode::ChangeSavePath
         )
     }
 }

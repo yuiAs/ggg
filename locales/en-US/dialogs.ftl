@@ -8,6 +8,7 @@ dialog-edit-field = Edit Field
 dialog-edit-label = Edit {$label}
 dialog-add-download = Add Download (Shift+Enter to expand [n-m] pattern)
 dialog-change-save-path = Change Save Path (Enter to confirm, Esc to cancel)
+dialog-change-folder = 📁 Change Folder (j/k to navigate, Enter to select)
 dialog-confirm-delete = Confirm Delete
 dialog-switch-folder = 📁 Switch Folder (j/k to navigate, Enter to select)
 dialog-actions = Actions (j/k to navigate, Enter to select)

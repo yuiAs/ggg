@@ -20,7 +20,7 @@ pub fn render(app: &TuiApp, f: &mut Frame) {
     let is_main_screen = matches!(
         app.state.ui_mode,
         UiMode::Normal | UiMode::AddDownload | UiMode::DownloadPreview |
-        UiMode::Search | UiMode::ChangeFolder | UiMode::SwitchFolder |
+        UiMode::Search | UiMode::ChangeFolder | UiMode::ChangeSavePath | UiMode::SwitchFolder |
         UiMode::ConfirmDelete | UiMode::ContextMenu | UiMode::Help
     ) || (matches!(app.state.ui_mode, UiMode::EditingField) && !app.state.is_editing_app_setting);
 
@@ -51,7 +51,8 @@ pub fn render(app: &TuiApp, f: &mut Frame) {
         UiMode::EditingField => render_input_dialog(app, f, size),
         UiMode::DownloadPreview => render_download_preview_dialog(app, f, size),
         UiMode::Search => {}, // Search is inline in status bar
-        UiMode::ChangeFolder => render_change_folder_dialog(app, f, size),
+        UiMode::ChangeFolder => render_change_folder_for_item_dialog(app, f, size),
+        UiMode::ChangeSavePath => render_change_save_path_dialog(app, f, size),
         UiMode::SwitchFolder => render_switch_folder_dialog(app, f, size),
         UiMode::ConfirmDelete => render_confirm_delete_dialog(app, f, size),
         UiMode::ContextMenu => render_context_menu(app, f, size),
@@ -659,6 +660,9 @@ fn render_status_bar(app: &TuiApp, f: &mut Frame, area: Rect) {
             (t("status-hint-finish"), String::new())
         }
         UiMode::ChangeFolder => {
+            (t("status-hint-navigate"), String::new())
+        }
+        UiMode::ChangeSavePath => {
             (t("status-hint-confirm-cancel"), String::new())
         }
         UiMode::SwitchFolder => {
@@ -1873,7 +1877,80 @@ fn render_download_preview_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
 }
 
 /// Render change folder dialog (centered overlay)
-fn render_change_folder_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
+/// Render folder picker dialog for changing an item's application folder
+fn render_change_folder_for_item_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
+    let config = match app.state.app_state.config.try_read() {
+        Ok(cfg) => cfg,
+        Err(_) => return,
+    };
+    let folder_entries = config.sorted_folder_entries();
+    drop(config);
+
+    let selected_index = app.state.folder_picker_index;
+
+    // Current folder of the selected item
+    let current_folder_id = app
+        .state
+        .get_selected_download()
+        .map(|task| task.folder_id.clone())
+        .unwrap_or_default();
+
+    let max_folder_width = folder_entries
+        .iter()
+        .map(|(_id, name)| name.len())
+        .max()
+        .unwrap_or(20);
+
+    let dialog_width = (max_folder_width as u16 + 8).max(40).min(60);
+    let dialog_height = (folder_entries.len() as u16 + 4).max(8).min(20);
+
+    let dialog_area = Rect {
+        x: (area.width.saturating_sub(dialog_width)) / 2,
+        y: (area.height.saturating_sub(dialog_height)) / 2,
+        width: dialog_width,
+        height: dialog_height,
+    };
+
+    let mut folder_lines = Vec::new();
+    for (idx, (folder_id, display_name)) in folder_entries.iter().enumerate() {
+        let is_selected = idx == selected_index;
+        let is_current = folder_id == &current_folder_id;
+
+        let prefix = if is_selected { "▶ " } else { "  " };
+        let suffix = if is_current { " (current)" } else { "" };
+
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else if is_current {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        folder_lines.push(Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled(display_name.clone(), style),
+            Span::styled(suffix, Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(folder_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(app.state.t("dialog-change-folder"))
+                .style(Style::default().bg(Color::Black)),
+        )
+        .alignment(Alignment::Left);
+
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(paragraph, dialog_area);
+}
+
+/// Render change save path dialog (free text input)
+fn render_change_save_path_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
     let dialog_width = 80;
     let dialog_height = 7;
 
