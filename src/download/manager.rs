@@ -901,7 +901,12 @@ impl DownloadManager {
         Ok(())
     }
 
-    pub async fn change_folder(&self, id: Uuid, new_folder_id: String) -> Result<()> {
+    pub async fn change_folder(
+        &self,
+        id: Uuid,
+        new_folder_id: String,
+        config: Option<&tokio::sync::RwLock<crate::app::config::Config>>,
+    ) -> Result<()> {
         // Find and remove from old folder queue
         let task = {
             let queues = self.folder_queues.read().await;
@@ -916,9 +921,51 @@ impl DownloadManager {
         };
 
         if let Some(mut task) = task {
-            // Update folder ID
+            let old_folder_id = task.folder_id.clone();
             task.folder_id = new_folder_id.clone();
-            
+
+            // Propagate new folder settings to the task
+            if let Some(config_lock) = config {
+                let cfg = config_lock.read().await;
+                let old_folder = cfg.folders.get(&old_folder_id);
+                let new_folder = cfg.folders.get(&new_folder_id);
+
+                // Reset save_path: if it matches the old folder's (or app default),
+                // update to the new folder's save_path so ResolvedSettings won't
+                // treat it as a manual override.
+                let old_base = old_folder
+                    .map(|f| f.save_path.clone())
+                    .unwrap_or_else(|| cfg.download.default_directory.clone());
+                if task.save_path == old_base || task.save_path == cfg.download.default_directory {
+                    task.save_path = new_folder
+                        .map(|f| f.save_path.clone())
+                        .unwrap_or_else(|| cfg.download.default_directory.clone());
+                }
+
+                // Reset user_agent: clear if it came from the old folder config
+                if let Some(old_ua) = old_folder.and_then(|f| f.user_agent.as_ref()) {
+                    if task.user_agent.as_ref() == Some(old_ua) {
+                        task.user_agent = new_folder.and_then(|f| f.user_agent.clone());
+                    }
+                }
+
+                // Reset headers: remove old folder's default_headers, add new ones
+                if let Some(old_f) = old_folder {
+                    for key in old_f.default_headers.keys() {
+                        // Only remove if the value still matches the old folder default
+                        if task.headers.get(key) == old_f.default_headers.get(key) {
+                            task.headers.remove(key);
+                        }
+                    }
+                }
+                if let Some(new_f) = new_folder {
+                    for (k, v) in &new_f.default_headers {
+                        // Insert new folder defaults (task-level overrides will win at resolve time)
+                        task.headers.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+            }
+
             // Add to new folder queue
             let new_queue = self.get_or_create_folder_queue(&new_folder_id).await;
             new_queue.add(task).await;
@@ -1646,7 +1693,7 @@ mod tests {
 
         // Try to change folder of non-existent task
         let fake_id = Uuid::new_v4();
-        let result = manager.change_folder(fake_id, "new_folder".to_string()).await;
+        let result = manager.change_folder(fake_id, "new_folder".to_string(), None).await;
 
         // Should return error
         assert!(result.is_err());

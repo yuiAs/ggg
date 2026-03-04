@@ -122,7 +122,7 @@ async fn test_manager_change_folder() {
     manager.add_download(task).await;
 
     // Change folder
-    manager.change_folder(task_id, "videos".to_string()).await.unwrap();
+    manager.change_folder(task_id, "videos".to_string(), None).await.unwrap();
 
     let updated_task = manager.get_by_id(task_id).await.unwrap();
     assert_eq!(updated_task.folder_id, "videos");

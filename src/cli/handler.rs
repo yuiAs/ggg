@@ -39,7 +39,7 @@ pub async fn handle_command(
         Commands::BatchAdd { file, folder } => handle_batch_add(&state, &manager, file, folder).await,
         Commands::Priority { id, set } => handle_priority(&manager, id, set).await,
         Commands::Move { id, to_top, to_bottom, before, folder } => {
-            handle_move(&manager, id, to_top, to_bottom, before, folder).await
+            handle_move(&manager, &state, id, to_top, to_bottom, before, folder).await
         }
         Commands::Export { action } => handle_export(action, &state, &manager).await,
         Commands::Import { action } => handle_import(action, &state, &manager).await,
@@ -1414,6 +1414,7 @@ async fn handle_priority(
 /// Move download in queue or to another folder
 async fn handle_move(
     manager: &DownloadManager,
+    state: &AppState,
     id_str: String,
     to_top: bool,
     to_bottom: bool,
@@ -1447,7 +1448,7 @@ async fn handle_move(
         manager.move_before(id, before_id).await?;
         println!("Moved download {} before {}", id, before_id);
     } else if let Some(folder_id) = folder {
-        manager.change_folder(id, folder_id.clone()).await?;
+        manager.change_folder(id, folder_id.clone(), Some(&state.config)).await?;
         println!("Moved download {} to folder '{}'", id, folder_id);
     }
 

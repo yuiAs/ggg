@@ -849,6 +849,19 @@ impl TuiState {
         self.selected_downloads.iter().copied().collect()
     }
 
+    /// Determine target download IDs based on selection state.
+    /// If the current (cursor) item is in the selected set, return all selected IDs.
+    /// Otherwise, return only the current item's ID.
+    pub fn get_target_download_ids(&self) -> Vec<Uuid> {
+        if let Some(current) = self.get_selected_download() {
+            if self.selected_downloads.contains(&current.id) {
+                return self.selected_downloads.iter().copied().collect();
+            }
+            return vec![current.id];
+        }
+        vec![]
+    }
+
     /// Select all visible downloads
     pub fn select_all(&mut self) {
         // Collect IDs first to avoid borrow issues

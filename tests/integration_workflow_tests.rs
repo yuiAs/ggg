@@ -415,7 +415,7 @@ async fn test_queue_persistence_workflow() {
     assert_eq!(loaded_task1.status, DownloadStatus::Pending);
 
     // Step 5: Verify manager can continue operations with loaded tasks
-    manager2.change_folder(task1_id, "videos".to_string()).await.unwrap();
+    manager2.change_folder(task1_id, "videos".to_string(), None).await.unwrap();
 
     let updated_task = manager2.get_by_id(task1_id).await.unwrap();
     assert_eq!(updated_task.folder_id, "videos");

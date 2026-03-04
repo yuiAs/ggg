@@ -1695,16 +1695,21 @@ impl TuiApp {
             KeyCode::Enter => {
                 if folder_count > 0 && self.state.folder_picker_index < folder_count {
                     let (folder_id, _display_name) = &folder_entries[self.state.folder_picker_index];
-                    if let Some(task) = self.state.get_selected_download() {
+                    let target_ids = self.state.get_target_download_ids();
+                    let mut changed = false;
+                    for id in target_ids {
                         if let Err(e) = self
                             .manager
-                            .change_folder(task.id, folder_id.clone())
+                            .change_folder(id, folder_id.clone(), Some(&self.state.app_state.config))
                             .await
                         {
-                            tracing::warn!("Failed to change folder: {}", e);
+                            tracing::warn!("Failed to change folder for {}: {}", id, e);
                         } else {
-                            self.save_queue().await?;
+                            changed = true;
                         }
+                    }
+                    if changed {
+                        self.save_queue().await?;
                     }
                 }
                 self.state.ui_mode = UiMode::Normal;
@@ -1736,17 +1741,20 @@ impl TuiApp {
                 self.state.input_buffer.pop();
             }
             KeyCode::Enter => {
-                // Submit new path
+                // Submit new path to all target downloads
                 if !self.state.input_buffer.is_empty() {
-                    if let Some(task) = self.state.get_selected_download() {
-                        let new_path = std::path::PathBuf::from(&self.state.input_buffer);
-
-                        // Change the save path
-                        if let Err(e) = self.manager.change_save_path(task.id, new_path).await {
-                            tracing::warn!("Failed to change path: {}", e);
+                    let new_path = std::path::PathBuf::from(&self.state.input_buffer);
+                    let target_ids = self.state.get_target_download_ids();
+                    let mut changed = false;
+                    for id in target_ids {
+                        if let Err(e) = self.manager.change_save_path(id, new_path.clone()).await {
+                            tracing::warn!("Failed to change path for {}: {}", id, e);
                         } else {
-                            self.save_queue().await?;
+                            changed = true;
                         }
+                    }
+                    if changed {
+                        self.save_queue().await?;
                     }
                 }
                 self.state.ui_mode = UiMode::Normal;
@@ -1898,11 +1906,19 @@ impl TuiApp {
                 self.state.input_buffer.clear();
             }
             ContextMenuAction::CopyUrl => {
-                // Copy URL to clipboard
-                // TODO: Implement clipboard integration (requires clipboard crate)
-                if let Some(task) = self.state.get_selected_download() {
-                    tracing::info!("Copy URL feature: {}", task.url);
-                    // For now, just log the URL - clipboard integration can be added later
+                let target_ids = self.state.get_target_download_ids();
+                let mut urls = Vec::new();
+                for id in target_ids {
+                    if let Some(task) = self.manager.get_by_id(id).await {
+                        urls.push(task.url.clone());
+                    }
+                }
+                if !urls.is_empty() {
+                    let text = urls.join("\n");
+                    match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(&text)) {
+                        Ok(()) => tracing::info!("Copied {} URL(s) to clipboard", urls.len()),
+                        Err(e) => tracing::warn!("Failed to copy to clipboard: {}", e),
+                    }
                 }
                 self.state.ui_mode = UiMode::Normal;
             }
@@ -2048,16 +2064,28 @@ impl TuiApp {
 
     /// Toggle download (start/pause) - supports multi-selection
     async fn toggle_download(&mut self) -> Result<()> {
-        // If there are selected downloads, toggle all of them
-        if !self.state.selected_downloads.is_empty() {
-            let selected_ids = self.state.get_selected_download_ids();
-            for id in selected_ids {
-                // Find the task to check its status
-                if let Some(task) = self.manager.get_by_id(id).await {
+        // Use current item's status as the reference to determine start vs pause
+        let reference_downloading = self
+            .state
+            .get_selected_download()
+            .map(|t| t.status == DownloadStatus::Downloading)
+            .unwrap_or(false);
+
+        let target_ids = self.state.get_target_download_ids();
+        if target_ids.is_empty() {
+            return Ok(());
+        }
+
+        for id in target_ids {
+            if let Some(task) = self.manager.get_by_id(id).await {
+                if reference_downloading {
+                    // Reference item is downloading → pause active downloads
+                    if task.status == DownloadStatus::Downloading {
+                        self.manager.pause_download(id).await?;
+                    }
+                } else {
+                    // Reference item is not downloading → start startable items
                     match task.status {
-                        DownloadStatus::Downloading => {
-                            self.manager.pause_download(id).await?;
-                        }
                         DownloadStatus::Pending | DownloadStatus::Paused | DownloadStatus::Error => {
                             self.manager.start_download(id, self.state.app_state.script_sender.clone(), self.state.app_state.config.clone()).await?;
                         }
@@ -2065,20 +2093,8 @@ impl TuiApp {
                     }
                 }
             }
-            self.save_queue().await?;
-        } else if let Some(task) = self.state.get_selected_download() {
-            // No multi-selection, toggle current item
-            match task.status {
-                DownloadStatus::Downloading => {
-                    self.manager.pause_download(task.id).await?;
-                }
-                DownloadStatus::Pending | DownloadStatus::Paused | DownloadStatus::Error => {
-                    self.manager.start_download(task.id, self.state.app_state.script_sender.clone(), self.state.app_state.config.clone()).await?;
-                }
-                _ => {}
-            }
-            self.save_queue().await?;
         }
+        self.save_queue().await?;
         Ok(())
     }
 
@@ -2086,13 +2102,11 @@ impl TuiApp {
     async fn delete_download(&mut self) -> Result<()> {
         const MAX_UNDO_HISTORY: usize = 10;
 
-        // If there are selected downloads, delete all of them
-        if !self.state.selected_downloads.is_empty() {
-            let ids_to_delete = self.state.get_selected_download_ids();
+        let ids_to_delete = self.state.get_target_download_ids();
+        if !ids_to_delete.is_empty() {
             for id in ids_to_delete {
                 // Save to undo history before deleting
                 if let Some(mut task) = self.manager.get_by_id(id).await {
-                    // Mark as deleted and add to history
                     task.status = DownloadStatus::Deleted;
                     self.manager.add_to_history(task.clone()).await;
                     self.state.delete_history.push(task);
@@ -2100,22 +2114,6 @@ impl TuiApp {
                 self.manager.remove_download(id).await;
             }
             self.state.clear_selections();
-            self.save_queue().await?;
-            self.state.adjust_selection_after_delete();
-        } else if let Some(task) = self.state.get_selected_download() {
-            // Get ID first to avoid borrow issues
-            let task_id = task.id;
-            let mut task_clone = task.clone();
-
-            // Mark as deleted and add to history
-            task_clone.status = DownloadStatus::Deleted;
-            self.manager.add_to_history(task_clone.clone()).await;
-
-            // Save to undo history before deleting
-            self.state.delete_history.push(task_clone);
-
-            // No multi-selection, delete current item
-            self.manager.remove_download(task_id).await;
             self.save_queue().await?;
             self.state.adjust_selection_after_delete();
         }

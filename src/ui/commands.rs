@@ -122,7 +122,7 @@ pub async fn handle_command(
         }
         Command::ChangeFolder { id, folder_id } => {
             if let Ok(uuid) = uuid::Uuid::parse_str(&id) {
-                match download_manager.change_folder(uuid, folder_id).await {
+                match download_manager.change_folder(uuid, folder_id, Some(&state.config)).await {
                     Ok(_) => CommandResponse::Success {
                         data: serde_json::json!({"status": "ok"}),
                     },
