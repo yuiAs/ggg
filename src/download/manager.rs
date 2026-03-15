@@ -321,6 +321,7 @@ impl DownloadManager {
         let retry_delay_secs = self.retry_delay_secs;
         let manager_for_cleanup = self.clone();
         let circuit_breaker = self.circuit_breaker.clone();
+        let history = self.history.clone();
         let task_url = task.url.clone();
 
         let handle = tokio::spawn(async move {
@@ -340,7 +341,10 @@ impl DownloadManager {
             loop {
                 // Clone Arc-wrapped types (cheap) and task for retry attempt
                 match Self::download_task(current_task.clone(), http_client.clone(), queue.clone(), script_sender.clone(), config.clone(), is_resuming).await {
-                    Ok(_) => {
+                    Ok(completed_task) => {
+                        // Add completed task to history for display in CompletedNode
+                        history.write().await.add(completed_task);
+
                         // Download succeeded - record success for circuit breaker
                         if let Some(domain) = super::circuit_breaker::extract_domain(&task_url) {
                             circuit_breaker.record_success(&domain);
@@ -463,7 +467,7 @@ impl DownloadManager {
         script_sender: Option<mpsc::Sender<ScriptRequest>>,
         config: Arc<tokio::sync::RwLock<crate::app::config::Config>>,
         is_resuming: bool,
-    ) -> Result<()> {
+    ) -> Result<DownloadTask> {
         // Compute effective script_files (Application + Folder override)
         let effective_script_files = Self::compute_effective_script_files(&config, &task.folder_id).await;
 
@@ -877,7 +881,7 @@ impl DownloadManager {
         queue.remove(task.id).await;
         tracing::info!("Download completed and logged: {}", task.filename);
 
-        Ok(())
+        Ok(task)
     }
 
     pub async fn pause_download(&self, id: Uuid) -> Result<()> {
