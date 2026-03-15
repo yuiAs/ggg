@@ -193,11 +193,16 @@ impl DownloadTask {
     }
 
     /// Calculate current download speed in bytes per second
+    /// Returns None if the task is not actively downloading
     pub fn speed(&self) -> Option<f64> {
+        if self.status != DownloadStatus::Downloading {
+            return None;
+        }
+
         let started = self.started_at?;
         let elapsed = Utc::now().signed_duration_since(started);
         let elapsed_secs = elapsed.num_milliseconds() as f64 / 1000.0;
-        
+
         if elapsed_secs > 0.0 && self.downloaded > 0 {
             Some(self.downloaded as f64 / elapsed_secs)
         } else {
