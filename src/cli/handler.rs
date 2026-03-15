@@ -8,7 +8,6 @@ use crate::download::task::{DownloadTask, DownloadStatus};
 use crate::download::completion_log::CompletedEntry;
 use crate::script::events::{BeforeRequestContext, HookEvent};
 use anyhow::Result;
-use chrono::Utc;
 use std::path::PathBuf;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -391,7 +390,7 @@ async fn handle_history(
     let mut log_files = Vec::new();
     if today {
         // Only today's log
-        let today_str = Utc::now().format("%Y%m%d").to_string();
+        let today_str = chrono::Local::now().format("%Y%m%d").to_string();
         let today_file = logs_dir.join(format!("{}.jsonl", today_str));
         if today_file.exists() {
             log_files.push(today_file);
@@ -673,12 +672,12 @@ async fn handle_debug_task(id_str: String, manager: &DownloadManager, json: bool
         println!("Resume Supported: {}", task.resume_supported);
         println!("Retry Count: {}", task.retry_count);
         println!("\nTimestamps:");
-        println!("  Created: {}", task.created_at.format("%Y-%m-%d %H:%M:%S"));
+        println!("  Created: {}", task.created_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S"));
         if let Some(started) = task.started_at {
-            println!("  Started: {}", started.format("%Y-%m-%d %H:%M:%S"));
+            println!("  Started: {}", started.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S"));
         }
         if let Some(completed) = task.completed_at {
-            println!("  Completed: {}", completed.format("%Y-%m-%d %H:%M:%S"));
+            println!("  Completed: {}", completed.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S"));
         }
         if let Some(etag) = &task.etag {
             println!("\nETag: {}", etag);

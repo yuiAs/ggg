@@ -46,14 +46,14 @@ pub fn format_download(task: &DownloadTask, detailed: bool) -> String {
             output.push_str("Resume: Supported\n");
         }
 
-        output.push_str(&format!("Created: {}\n", task.created_at.format("%Y-%m-%d %H:%M:%S")));
+        output.push_str(&format!("Created: {}\n", task.created_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S")));
 
         if let Some(started) = task.started_at {
-            output.push_str(&format!("Started: {}\n", started.format("%Y-%m-%d %H:%M:%S")));
+            output.push_str(&format!("Started: {}\n", started.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S")));
         }
 
         if let Some(completed) = task.completed_at {
-            output.push_str(&format!("Completed: {}\n", completed.format("%Y-%m-%d %H:%M:%S")));
+            output.push_str(&format!("Completed: {}\n", completed.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S")));
         }
     } else {
         // Compact format for lists

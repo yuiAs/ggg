@@ -81,8 +81,8 @@ pub async fn append_completion(task: &DownloadTask) -> Result<()> {
     // Create logs directory if it doesn't exist
     std::fs::create_dir_all(&logs_dir)?;
 
-    // Generate log filename based on current date (UTC)
-    let today = Utc::now().format("%Y%m%d").to_string();
+    // Generate log filename based on current date (local timezone)
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
     let log_file = logs_dir.join(format!("{}.jsonl", today));
 
     // Convert task to CompletedEntry

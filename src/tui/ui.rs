@@ -570,7 +570,7 @@ fn render_task_logs(_app: &TuiApp, task: &crate::download::task::DownloadTask, f
         let start_idx = task.logs.len().saturating_sub(max_logs);
 
         for log in &task.logs[start_idx..] {
-            let timestamp_str = log.timestamp.format("%H:%M:%S").to_string();
+            let timestamp_str = log.timestamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
 
             let (level_str, level_color) = match log.level {
                 LogLevel::Info => ("INFO ", Color::White),
