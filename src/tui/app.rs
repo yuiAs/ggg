@@ -700,7 +700,10 @@ impl TuiApp {
                 }
                 KeyAction::OpenContextMenu => {
                     self.state.reset_context_menu();
-                    self.state.ui_mode = UiMode::ContextMenu;
+                    self.state.ui_mode = match self.state.focus_pane {
+                        FocusPane::FolderTree => UiMode::FolderContextMenu,
+                        _ => UiMode::ContextMenu,
+                    };
                     return Ok(());
                 }
                 KeyAction::EditItem => {
