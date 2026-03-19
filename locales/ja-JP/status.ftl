@@ -2,21 +2,21 @@
 # Download states, progress indicators
 
 # Details panel labels
-details-label-status = 状態:
+details-label-status = Status:
 details-label-url = URL:
-details-label-save-path = 保存パス:
-details-label-size = サイズ:
-details-label-downloaded = ダウンロード済み:
-details-label-filename = 📄 ファイル名:
-details-label-size-icon = 📊 サイズ:
+details-label-save-path = Save Path:
+details-label-size = Size:
+details-label-downloaded = Downloaded:
+details-label-filename = 📄 Filename:
+details-label-size-icon = 📊 Size:
 
 # Download status values
-status-pending = ⏳ 待機中
-status-downloading = 📥 ダウンロード中
-status-paused = ⏸️  一時停止
-status-completed = ✅ 完了
-status-error = ❌ エラー
-status-deleted = 🗑️  削除済み
+status-pending = ⏳ Pending
+status-downloading = 📥 Downloading
+status-paused = ⏸️  Paused
+status-completed = ✅ Completed
+status-error = ❌ Error
+status-deleted = 🗑️  Deleted
 
 # Messages
 message-no-download-selected = ダウンロードが選択されていません

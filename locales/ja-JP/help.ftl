@@ -1,51 +1,51 @@
 # Help screen strings - Japanese
 # Keybindings and help text
 
-help-title = ヘルプ - キーバインド
+help-title = Help - Keybindings
 
-help-section-primary = 主要アクション:
-help-key-space = Space      - ダウンロードの開始/停止
-help-key-enter = Enter      - 詳細パネルの表示/非表示
-help-key-a = a          - 新しいダウンロードを追加
-help-key-d = d          - ダウンロードを削除
-help-key-ctrl-z = Ctrl+Z     - 削除を取り消し
-help-key-m = m          - コンテキストメニューを開く
-help-key-e = e          - 編集（フォルダ変更）
-help-key-r = r          - 失敗したダウンロードを再試行
-help-key-shift-s = S          - すべて再開
-help-key-shift-p = P          - すべて一時停止
+help-section-primary = Primary Actions:
+help-key-space = Space      - Toggle Start/Pause
+help-key-enter = Enter      - Toggle Details Panel
+help-key-a = a          - Add New Download
+help-key-d = d          - Delete Download
+help-key-ctrl-z = Ctrl+Z     - Undo Delete
+help-key-m = m          - Open Context Menu
+help-key-e = e          - Edit (Change Folder)
+help-key-r = r          - Retry Failed Download
+help-key-shift-s = S          - Resume All
+help-key-shift-p = P          - Pause All
 
-help-section-multi = 複数選択:
-help-key-v = v          - 現在の項目の選択を切り替え
-help-key-v-shift = V          - 表示中の全項目を選択
-help-key-esc-clear = Esc        - すべての選択を解除
-help-key-multi-action = Space/d    - 選択した全項目にアクションを適用
+help-section-multi = Multi-Select:
+help-key-v = v          - Toggle Selection
+help-key-v-shift = V          - Select All Visible
+help-key-esc-clear = Esc        - Clear All Selections
+help-key-multi-action = Space/d    - Apply to All Selected
 
-help-section-navigation = ナビゲーション:
-help-key-jk = j/k, ↓/↑   - 下/上に移動
-help-key-g = g, Home    - 先頭にジャンプ
-help-key-g-shift = G, End     - 末尾にジャンプ
-help-key-ctrl-d = Ctrl+d     - 1ページ下へ
-help-key-ctrl-u = Ctrl+u     - 1ページ上へ
+help-section-navigation = Navigation:
+help-key-jk = j/k, ↓/↑   - Move Down/Up
+help-key-g = g, Home    - Jump to Top
+help-key-g-shift = G, End     - Jump to Bottom
+help-key-ctrl-d = Ctrl+d     - Page Down
+help-key-ctrl-u = Ctrl+u     - Page Up
 
-help-section-panes = ペイン切り替え:
-help-key-prev-pane = Shift+Tab  - 前のペイン
-help-key-next-pane = Tab        - 次のペイン
+help-section-panes = Panes:
+help-key-prev-pane = Shift+Tab  - Previous Pane
+help-key-next-pane = Tab        - Next Pane
 
-help-section-search = 検索/フィルタ:
-help-key-slash = /          - 検索開始
-help-key-esc-search = Esc        - 検索をクリア/キャンセル
+help-section-search = Search/Filter:
+help-key-slash = /          - Start Search
+help-key-esc-search = Esc        - Clear/Cancel Search
 
 help-section-ui = UI:
-help-key-question = ?          - ヘルプ画面
-help-key-x = x          - 設定
-help-key-i = i          - 詳細パネルの表示/非表示
-help-key-r-shift = R          - 再読み込み
+help-key-question = ?          - Help Screen
+help-key-x = x          - Settings
+help-key-i = i          - Toggle Details Panel
+help-key-r-shift = R          - Reload
 
-help-section-settings = 設定:
-help-key-reload-config = Shift+R    - ディスクから設定を再読み込み
+help-section-settings = Settings:
+help-key-reload-config = Shift+R    - Reload Config from Disk
 
-help-section-system = システム:
-help-key-quit = q, Ctrl+c  - 終了
+help-section-system = System:
+help-key-quit = q, Ctrl+c  - Quit
 
-help-footer = Esc または q を押して閉じる
+help-footer = Press Esc or q to close
