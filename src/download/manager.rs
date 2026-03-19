@@ -175,6 +175,26 @@ impl DownloadManager {
         queue.add(task).await;
     }
 
+    /// Add a download, checking for duplicate URLs in the folder queue.
+    /// Returns `true` if the task was added, `false` if a duplicate URL was found.
+    pub async fn add_download_if_unique(&self, mut task: DownloadTask) -> bool {
+        task.filename = sanitize_filename(&task.filename);
+        let folder_id = task.folder_id.clone();
+        let queue = self.get_or_create_folder_queue(&folder_id).await;
+
+        if queue.contains_url(&task.url).await {
+            tracing::warn!(
+                "Duplicate URL rejected in folder '{}': {}",
+                folder_id,
+                task.url
+            );
+            return false;
+        }
+
+        queue.add(task).await;
+        true
+    }
+
     /// Get all downloads from all folder queues
     pub async fn get_all_downloads(&self) -> Vec<DownloadTask> {
         let queues = self.folder_queues.read().await;

@@ -80,6 +80,12 @@ impl FolderQueue {
         Arc::clone(&self.semaphore)
     }
 
+    /// Check if a URL already exists in the queue
+    pub async fn contains_url(&self, url: &str) -> bool {
+        let tasks = self.tasks.read().await;
+        tasks.iter().any(|t| t.url == url)
+    }
+
     /// Add a task to the queue
     pub async fn add(&self, task: DownloadTask) {
         let is_pending = task.status == DownloadStatus::Pending;
@@ -619,5 +625,19 @@ mod tests {
         let counts = queue.get_counts().await;
         assert_eq!(counts.pending, 2);
         assert_eq!(counts.downloading, 1);
+    }
+
+    #[tokio::test]
+    async fn test_folder_queue_contains_url() {
+        let queue = FolderQueue::new("test-folder", 3);
+
+        let task = create_test_task(DownloadStatus::Pending);
+        let url = task.url.clone();
+
+        assert!(!queue.contains_url(&url).await);
+
+        queue.add(task).await;
+        assert!(queue.contains_url(&url).await);
+        assert!(!queue.contains_url("https://example.com/other.txt").await);
     }
 }

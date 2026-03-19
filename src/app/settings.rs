@@ -316,6 +316,7 @@ mod tests {
                 user_agent: Some("FolderAgent/1.0".to_string()),
                 referrer_policy: None,
                 default_headers: HashMap::new(),
+                prevent_duplicate_url: false,
             },
         );
 
@@ -351,6 +352,7 @@ mod tests {
                 user_agent: Some("FolderAgent/1.0".to_string()),
                 referrer_policy: None,
                 default_headers: HashMap::new(),
+                prevent_duplicate_url: false,
             },
         );
 
@@ -403,6 +405,7 @@ mod tests {
                 user_agent: None,
                 referrer_policy: None,
                 default_headers: HashMap::new(),
+                prevent_duplicate_url: false,
             },
         );
 
@@ -442,6 +445,7 @@ mod tests {
                 user_agent: None,
                 referrer_policy: None,
                 default_headers: HashMap::new(),
+                prevent_duplicate_url: false,
             },
         );
 
@@ -476,6 +480,7 @@ mod tests {
                 user_agent: None,
                 referrer_policy: None,
                 default_headers: HashMap::new(),
+                prevent_duplicate_url: false,
             },
         );
 
@@ -492,6 +497,7 @@ mod tests {
                 user_agent: None,
                 referrer_policy: None,
                 default_headers: HashMap::new(),
+                prevent_duplicate_url: false,
             },
         );
 
@@ -521,6 +527,7 @@ mod tests {
                 user_agent: None,
                 referrer_policy: None,
                 default_headers: folder_headers,
+                prevent_duplicate_url: false,
             },
         );
 
@@ -562,6 +569,7 @@ mod tests {
                 user_agent: None,
                 referrer_policy: None,
                 default_headers: HashMap::new(),
+                prevent_duplicate_url: false,
             },
         );
 
@@ -579,6 +587,7 @@ mod tests {
                 user_agent: None,
                 referrer_policy: None,
                 default_headers: HashMap::new(),
+                prevent_duplicate_url: false,
             },
         );
 

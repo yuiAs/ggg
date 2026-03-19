@@ -204,6 +204,7 @@ auto_start_downloads = true         # Starts downloads immediately
 **Optional:**
 - `auto_date_directory` - Create YYYYMMDD subdirectories (default: `false`)
 - `auto_start_downloads` - Auto-start downloads when added (default: `false`)
+- `prevent_duplicate_url` - Reject downloads with URLs already in this folder's queue (default: `false`)
 
 ### Inheritance and Override
 

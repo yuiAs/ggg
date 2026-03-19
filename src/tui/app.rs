@@ -1239,7 +1239,7 @@ impl TuiApp {
                     }
                 } else {
                     // Navigate fields
-                    let field_count = 8; // save_path, auto_date, auto_start, scripts, max_concurrent, user_agent, referrer_policy, headers
+                    let field_count = 9; // save_path, auto_date, auto_start, prevent_duplicate_url, scripts, max_concurrent, user_agent, referrer_policy, headers
                     self.state.move_field_selection_down(field_count);
                 }
             }
@@ -1430,11 +1430,12 @@ impl TuiApp {
             0 => SettingsField::FolderSavePath,
             1 => SettingsField::FolderAutoDate,
             2 => SettingsField::FolderAutoStart,
-            3 => SettingsField::FolderScripts,
-            4 => SettingsField::FolderMaxConcurrent,
-            5 => SettingsField::FolderUserAgent,
-            6 => SettingsField::FolderReferrerPolicy,
-            7 => SettingsField::FolderHeaders,
+            3 => SettingsField::FolderPreventDuplicateUrl,
+            4 => SettingsField::FolderScripts,
+            5 => SettingsField::FolderMaxConcurrent,
+            6 => SettingsField::FolderUserAgent,
+            7 => SettingsField::FolderReferrerPolicy,
+            8 => SettingsField::FolderHeaders,
             _ => return Ok(()),
         };
 
@@ -1449,6 +1450,11 @@ impl TuiApp {
             SettingsField::FolderAutoStart => {
                 // Toggle boolean directly
                 self.toggle_auto_start().await?;
+                self.state.settings_edit_field = None;
+            }
+            SettingsField::FolderPreventDuplicateUrl => {
+                // Toggle boolean directly
+                self.toggle_prevent_duplicate_url().await?;
                 self.state.settings_edit_field = None;
             }
             SettingsField::FolderScripts => {
@@ -1503,6 +1509,22 @@ impl TuiApp {
                 tracing::info!(
                     "Toggled auto_start_downloads to {} for folder '{}'",
                     folder.auto_start_downloads,
+                    folder_id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Toggle prevent_duplicate_url for selected folder
+    async fn toggle_prevent_duplicate_url(&mut self) -> Result<()> {
+        if let Some(ref folder_id) = self.state.selected_folder_id {
+            let mut config = self.state.app_state.config.write().await;
+            if let Some(folder) = config.folders.get_mut(folder_id) {
+                folder.prevent_duplicate_url = !folder.prevent_duplicate_url;
+                tracing::info!(
+                    "Toggled prevent_duplicate_url to {} for folder '{}'",
+                    folder.prevent_duplicate_url,
                     folder_id
                 );
             }
@@ -2230,6 +2252,7 @@ impl TuiApp {
             user_agent: None,
             referrer_policy: None,
             default_headers: std::collections::HashMap::new(),
+            prevent_duplicate_url: false,
         };
 
         config.folders.insert(new_folder_id.clone(), new_folder);
@@ -2628,18 +2651,28 @@ impl TuiApp {
         let folder_id = task.folder_id.clone();
         let task_id = task.id;
 
-        // Add download to queue
-        self.manager.add_download(task).await;
-
-        // Check if auto-start is enabled for this folder
-        let should_auto_start = {
+        // Check folder settings for duplicate prevention and auto-start
+        let (prevent_duplicate, should_auto_start) = {
             let config = self.state.app_state.config.read().await;
-            config
-                .folders
-                .get(&folder_id)
-                .map(|f| f.auto_start_downloads)
-                .unwrap_or(false)
+            let folder = config.folders.get(&folder_id);
+            (
+                folder.map(|f| f.prevent_duplicate_url).unwrap_or(false),
+                folder.map(|f| f.auto_start_downloads).unwrap_or(false),
+            )
         };
+
+        // Add download to queue (with optional duplicate check)
+        if prevent_duplicate {
+            if !self.manager.add_download_if_unique(task).await {
+                tracing::info!(
+                    "Skipped duplicate URL in folder '{}'",
+                    folder_id
+                );
+                return Ok(());
+            }
+        } else {
+            self.manager.add_download(task).await;
+        }
 
         // Auto-start if enabled
         if should_auto_start {

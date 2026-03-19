@@ -230,6 +230,9 @@ pub struct FolderConfig {
     pub referrer_policy: Option<ReferrerPolicy>,
     #[serde(default)]
     pub default_headers: HashMap<String, String>,
+    /// Prevent adding downloads with duplicate URLs already in the folder queue
+    #[serde(default)]
+    pub prevent_duplicate_url: bool,
 }
 
 impl Default for FolderConfig {
@@ -245,6 +248,7 @@ impl Default for FolderConfig {
             user_agent: None,
             referrer_policy: None,
             default_headers: HashMap::new(),
+            prevent_duplicate_url: false,
         }
     }
 }
@@ -380,6 +384,7 @@ impl Config {
                     user_agent: None,
                     referrer_policy: None,
                     default_headers: HashMap::new(),
+                    prevent_duplicate_url: false,
                 },
             );
         }
@@ -983,6 +988,7 @@ timeout = 60
             user_agent: None,       // Should inherit from app
             referrer_policy: None,  // Should inherit from app
             default_headers: HashMap::new(),
+            prevent_duplicate_url: false,
         };
 
         let serialized = toml::to_string_pretty(&folder_config).unwrap();

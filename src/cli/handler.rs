@@ -1081,6 +1081,7 @@ async fn handle_folder_create(
         user_agent: None,
         referrer_policy: None,
         default_headers: HashMap::new(),
+        prevent_duplicate_url: false,
     };
 
     // Create directory if it doesn't exist

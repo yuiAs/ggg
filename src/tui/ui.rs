@@ -1378,30 +1378,38 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
                 };
                 detail_lines.push(make_field_line(2, &app.state.t("settings-folder-auto-start"), auto_start_str));
 
-                // Field 3: Scripts
+                // Field 3: Prevent Duplicate URL
+                let prevent_dup_str = if folder_config.prevent_duplicate_url {
+                    app.state.t("settings-value-enabled")
+                } else {
+                    app.state.t("settings-value-disabled")
+                };
+                detail_lines.push(make_field_line(3, &app.state.t("settings-folder-prevent-duplicate-url"), prevent_dup_str));
+
+                // Field 4: Scripts
                 let scripts_status = match folder_config.scripts_enabled {
                     Some(true) => app.state.t("settings-value-enabled-override"),
                     Some(false) => app.state.t("settings-value-disabled-override"),
                     None => app.state.t("settings-value-inherit"),
                 };
-                detail_lines.push(make_field_line(3, &app.state.t("settings-folder-scripts"), scripts_status));
+                detail_lines.push(make_field_line(4, &app.state.t("settings-folder-scripts"), scripts_status));
 
-                // Field 4: Max Concurrent
+                // Field 5: Max Concurrent
                 let max_concurrent_str = folder_config
                     .max_concurrent
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| app.state.t("settings-value-inherit"));
-                detail_lines.push(make_field_line(4, &app.state.t("settings-folder-max-concurrent"), max_concurrent_str));
+                detail_lines.push(make_field_line(5, &app.state.t("settings-folder-max-concurrent"), max_concurrent_str));
 
-                // Field 5: User Agent
+                // Field 6: User Agent
                 let user_agent_str = folder_config
                     .user_agent
                     .as_ref()
                     .map(|s| s.clone())
                     .unwrap_or_else(|| app.state.t("settings-value-inherit"));
-                detail_lines.push(make_field_line(5, &app.state.t("settings-folder-user-agent"), user_agent_str));
+                detail_lines.push(make_field_line(6, &app.state.t("settings-folder-user-agent"), user_agent_str));
 
-                // Field 6: Referrer Policy
+                // Field 7: Referrer Policy
                 let referrer_policy_str = match &folder_config.referrer_policy {
                     Some(policy) => {
                         use crate::app::config::ReferrerPolicy;
@@ -1414,15 +1422,15 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
                     }
                     None => app.state.t("settings-value-inherit"),
                 };
-                detail_lines.push(make_field_line(6, &app.state.t("settings-folder-referrer-policy"), referrer_policy_str));
+                detail_lines.push(make_field_line(7, &app.state.t("settings-folder-referrer-policy"), referrer_policy_str));
 
-                // Field 7: Headers
+                // Field 8: Headers
                 let headers_str = if folder_config.default_headers.is_empty() {
                     app.state.t("settings-value-not-set")
                 } else {
                     format!("{} headers", folder_config.default_headers.len())
                 };
-                detail_lines.push(make_field_line(7, &app.state.t("settings-folder-headers"), headers_str));
+                detail_lines.push(make_field_line(8, &app.state.t("settings-folder-headers"), headers_str));
 
                 // Show headers details if not empty
                 if !folder_config.default_headers.is_empty() {
