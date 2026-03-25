@@ -1463,6 +1463,7 @@ dependencies = [
  "fluent-bundle",
  "futures-util",
  "intl-memoizer",
+ "percent-encoding",
  "pretty_assertions",
  "ratatui",
  "regex",

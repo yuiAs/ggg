@@ -39,6 +39,50 @@ struct ParsedHeaders {
     all_headers: std::collections::HashMap<String, String>,
 }
 
+/// Extract filename from Content-Disposition header value.
+/// Prioritizes `filename*` (RFC 5987/6266) over `filename`.
+fn parse_content_disposition_filename(value: &str) -> Option<String> {
+    // Try filename* first (RFC 5987: encoding'language'value)
+    if let Some(star_pos) = value.find("filename*=") {
+        let rest = &value[star_pos + "filename*=".len()..];
+        // Strip optional quotes around the entire ext-value (non-standard but seen in the wild)
+        let rest = rest.trim_start_matches('"');
+        // Format: charset'language'percent-encoded-value
+        if let Some(tick_pos) = rest.find("''") {
+            let encoded = &rest[tick_pos + 2..];
+            // Take until the next `;` or `"` or end
+            let encoded = encoded
+                .split(|c: char| c == ';' || c == '"')
+                .next()
+                .unwrap_or(encoded)
+                .trim();
+            let decoded = percent_encoding::percent_decode_str(encoded)
+                .decode_utf8()
+                .ok()?;
+            if !decoded.is_empty() {
+                return Some(decoded.into_owned());
+            }
+        }
+    }
+
+    // Fallback to filename= (ASCII)
+    if let Some(pos) = value.find("filename=") {
+        let rest = &value[pos + "filename=".len()..];
+        let name = if rest.starts_with('"') {
+            // Quoted: take content between first pair of quotes
+            rest[1..].split('"').next().unwrap_or("")
+        } else {
+            // Unquoted: take until `;` or end
+            rest.split(';').next().unwrap_or("").trim()
+        };
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+
+    None
+}
+
 /// Parse common HTTP response headers
 fn parse_response_headers(headers: &HeaderMap) -> ParsedHeaders {
     let size = headers
@@ -65,12 +109,7 @@ fn parse_response_headers(headers: &HeaderMap) -> ParsedHeaders {
     let filename = headers
         .get("content-disposition")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| {
-            // Parse filename from Content-Disposition header
-            v.split("filename=")
-                .nth(1)
-                .map(|s| s.trim_matches('"').to_string())
-        });
+        .and_then(|v| parse_content_disposition_filename(v));
 
     let content_type = headers
         .get("content-type")
@@ -658,6 +697,40 @@ mod tests {
         let parsed = parse_response_headers(&headers);
 
         assert_eq!(parsed.filename, Some("document.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_content_disposition_filename_star_priority() {
+        // filename* (RFC 5987) should take priority over filename
+        let value = "inline; filename=\"___.jpg.webp\"; filename*=UTF-8''%E3%81%93%E3%81%AE%E3%81%8B.jpg.webp";
+        assert_eq!(
+            parse_content_disposition_filename(value),
+            Some("このか.jpg.webp".to_string())
+        );
+    }
+
+    #[test]
+    fn test_content_disposition_filename_only() {
+        let value = "attachment; filename=\"report.pdf\"";
+        assert_eq!(
+            parse_content_disposition_filename(value),
+            Some("report.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn test_content_disposition_filename_star_only() {
+        let value = "attachment; filename*=UTF-8''%E3%83%86%E3%82%B9%E3%83%88.txt";
+        assert_eq!(
+            parse_content_disposition_filename(value),
+            Some("テスト.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn test_content_disposition_no_filename() {
+        let value = "inline";
+        assert_eq!(parse_content_disposition_filename(value), None);
     }
 
     #[test]
