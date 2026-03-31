@@ -899,6 +899,13 @@ impl DownloadManager {
 
         // Remove from queue (completed tasks are logged to completion log)
         queue.remove(task.id).await;
+
+        // Persist queue to disk immediately so completed tasks are not
+        // resurrected if the process exits before the next save.
+        if let Err(e) = queue.save().await {
+            tracing::error!("Failed to persist queue after completion: {}", e);
+        }
+
         tracing::info!("Download completed and logged: {}", task.filename);
 
         Ok(task)
