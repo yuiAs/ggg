@@ -30,7 +30,7 @@ tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 
 # JavaScript Engine (V8 via deno_core)
-deno_core = "0.381"
+deno_core = "0.398"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
