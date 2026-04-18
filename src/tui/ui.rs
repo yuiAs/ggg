@@ -1,5 +1,6 @@
 use super::app::TuiApp;
 use super::state::{DetailsPosition, FocusPane, FolderTreeItem, UiMode};
+use super::theme;
 use crate::download::task::{DownloadStatus, LogLevel};
 use crate::download::http_errors::HttpErrorInfo;
 use fluent::fluent_args;
@@ -160,19 +161,19 @@ fn render_folder_tree(app: &TuiApp, f: &mut Frame, area: Rect) {
 
         let style = if i == app.state.tree_selected_index {
             Style::default()
-                .fg(Color::Rgb(255, 220, 100))
+                .fg(theme::ACCENT_SELECTED)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Rgb(200, 200, 210))
+            Style::default().fg(theme::TEXT_NORMAL)
         };
 
         ListItem::new(format!(" {} {}", icon, name)).style(style)
     }).collect();
 
     let border_style = if is_focused {
-        Style::default().fg(Color::Rgb(255, 220, 100))
+        Style::default().fg(theme::ACCENT_SELECTED)
     } else {
-        Style::default().fg(Color::Rgb(80, 80, 100))
+        Style::default().fg(theme::BORDER_INACTIVE)
     };
 
     let list = List::new(items)
@@ -184,7 +185,7 @@ fn render_folder_tree(app: &TuiApp, f: &mut Frame, area: Rect) {
         )
         .highlight_style(
             Style::default()
-                .bg(Color::Rgb(60, 60, 80))
+                .bg(theme::BG_SELECTION)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▶ ");
@@ -244,8 +245,8 @@ fn render_download_list(app: &TuiApp, f: &mut Frame, area: Rect) {
     ])
     .style(
         Style::default()
-            .fg(Color::Black)
-            .bg(Color::Rgb(100, 100, 120))
+            .fg(theme::FG_ON_TABLE_HEADER)
+            .bg(theme::BG_TABLE_HEADER)
             .add_modifier(Modifier::BOLD),
     )
     .height(1);
@@ -332,9 +333,9 @@ fn render_download_list(app: &TuiApp, f: &mut Frame, area: Rect) {
     };
 
     let border_style = if is_focused {
-        Style::default().fg(Color::Rgb(255, 220, 100))
+        Style::default().fg(theme::ACCENT_SELECTED)
     } else {
-        Style::default().fg(Color::Rgb(80, 80, 100))
+        Style::default().fg(theme::BORDER_INACTIVE)
     };
 
     let table = Table::new(rows, widths)
@@ -344,11 +345,11 @@ fn render_download_list(app: &TuiApp, f: &mut Frame, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(border_style)
                 .title(title)
-                .style(Style::default().bg(Color::Black))
+                .style(Style::default().bg(theme::BG_PRIMARY))
         )
         .row_highlight_style(
             Style::default()
-                .bg(Color::Rgb(60, 60, 80))
+                .bg(theme::BG_SELECTION)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▶ ");
@@ -392,9 +393,9 @@ fn render_details_panel(app: &TuiApp, f: &mut Frame, area: Rect) {
     let is_focused = app.state.focus_pane == FocusPane::DetailsPanel;
 
     let border_style = if is_focused {
-        Style::default().fg(Color::Rgb(255, 220, 100))
+        Style::default().fg(theme::ACCENT_SELECTED)
     } else {
-        Style::default().fg(Color::Rgb(80, 80, 100))
+        Style::default().fg(theme::BORDER_INACTIVE)
     };
 
     if let Some(task) = app.state.get_selected_download() {
@@ -795,7 +796,7 @@ fn render_help(app: &TuiApp, f: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(app.state.t("dialog-help"))
-                .style(Style::default().bg(Color::Black)),
+                .style(Style::default().bg(theme::BG_PRIMARY)),
         )
         .wrap(Wrap { trim: false });
 
@@ -864,7 +865,7 @@ fn render_rename_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(100, 140, 180)));
+        .border_style(Style::default().fg(theme::ACCENT_SECTION));
 
     let inner = block.inner(dialog_area);
     f.render_widget(block, dialog_area);
@@ -873,7 +874,7 @@ fn render_rename_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
     let prompt_line = Line::from(vec![
         Span::styled(
             format!("{} ", &app.state.input_prompt),
-            Style::default().fg(Color::Rgb(180, 180, 190)),
+            Style::default().fg(theme::TEXT_NORMAL),
         ),
         Span::styled(input_text, Style::default().fg(Color::White)),
     ]);
@@ -901,14 +902,14 @@ fn render_settings_tabs(app: &TuiApp, f: &mut Frame, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(80, 80, 100)))
+                .border_style(Style::default().fg(theme::BORDER_INACTIVE))
                 .title(app.state.t("dialog-settings")),
         )
         .select(selected_index)
-        .style(Style::default().fg(Color::Rgb(150, 150, 160)))
+        .style(Style::default().fg(theme::TEXT_MUTED))
         .highlight_style(
             Style::default()
-                .fg(Color::Rgb(255, 220, 100))
+                .fg(theme::ACCENT_SELECTED)
                 .add_modifier(Modifier::BOLD),
         )
         .divider(" │ ");
@@ -954,13 +955,13 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
     let mut lines = Vec::new();
 
     // Modern color palette
-    let section_header_color = Color::Rgb(100, 140, 180);
-    let selected_color = Color::Rgb(255, 220, 100);
-    let description_color = Color::Rgb(100, 100, 120);
-    let border_color = Color::Rgb(80, 80, 100);
-    let success_color = Color::Rgb(100, 180, 100);
-    let error_color = Color::Rgb(200, 100, 100);
-    let muted_color = Color::Rgb(120, 120, 130);
+    let section_header_color = theme::ACCENT_SECTION;
+    let selected_color = theme::ACCENT_SELECTED;
+    let description_color = theme::TEXT_DESCRIPTION;
+    let border_color = theme::BORDER_INACTIVE;
+    let success_color = theme::STATUS_SUCCESS;
+    let error_color = theme::STATUS_ERROR;
+    let muted_color = theme::TEXT_MUTED;
 
     if let Ok(config) = config {
         lines.push(Line::from(Span::styled(
@@ -980,7 +981,7 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
                     .fg(selected_color)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Rgb(180, 180, 190))
+                Style::default().fg(theme::TEXT_NORMAL)
             };
 
             let value = match field {
@@ -1200,12 +1201,12 @@ fn render_folder_list(app: &TuiApp, f: &mut Frame, area: Rect) {
     let config = app.state.app_state.config.try_read();
 
     // Modern color palette
-    let selected_color = Color::Rgb(255, 220, 100);
-    let border_color = Color::Rgb(80, 80, 100);
-    let success_color = Color::Rgb(100, 180, 100);
-    let error_color = Color::Rgb(200, 100, 100);
-    let section_header_color = Color::Rgb(100, 140, 180);
-    let muted_color = Color::Rgb(120, 120, 130);
+    let selected_color = theme::ACCENT_SELECTED;
+    let border_color = theme::BORDER_INACTIVE;
+    let success_color = theme::STATUS_SUCCESS;
+    let error_color = theme::STATUS_ERROR;
+    let section_header_color = theme::ACCENT_SECTION;
+    let muted_color = theme::TEXT_MUTED;
 
     let mut folder_items = Vec::new();
     let mut folder_count = 0;
@@ -1221,7 +1222,7 @@ fn render_folder_list(app: &TuiApp, f: &mut Frame, area: Rect) {
                     .fg(selected_color)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Rgb(180, 180, 190))
+                Style::default().fg(theme::TEXT_NORMAL)
             };
 
             let prefix = if is_selected {
@@ -1253,7 +1254,7 @@ fn render_folder_list(app: &TuiApp, f: &mut Frame, area: Rect) {
     )));
     folder_items.push(Line::from(Span::styled(
         "r: rename",
-        Style::default().fg(Color::Rgb(180, 160, 220)),
+        Style::default().fg(theme::ACCENT_PURPLE),
     )));
     folder_items.push(Line::from(Span::styled(
         "d: delete",
@@ -1313,13 +1314,13 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
     let field_index = app.state.settings_field_index;
 
     // Modern color palette
-    let selected_color = Color::Rgb(255, 220, 100);
-    let section_header_color = Color::Rgb(100, 140, 180);
-    let border_color = Color::Rgb(80, 80, 100);
-    let success_color = Color::Rgb(100, 180, 100);
-    let error_color = Color::Rgb(200, 100, 100);
-    let muted_color = Color::Rgb(120, 120, 130);
-    let text_color = Color::Rgb(180, 180, 190);
+    let selected_color = theme::ACCENT_SELECTED;
+    let section_header_color = theme::ACCENT_SECTION;
+    let border_color = theme::BORDER_INACTIVE;
+    let success_color = theme::STATUS_SUCCESS;
+    let error_color = theme::STATUS_ERROR;
+    let muted_color = theme::TEXT_MUTED;
+    let text_color = theme::TEXT_NORMAL;
 
     let mut detail_lines = Vec::new();
 
@@ -1501,7 +1502,7 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
                                     if app_enabled {
                                         ("○", format!("{} (inherit)", filename), muted_color)
                                     } else {
-                                        ("○", format!("{} (inherit)", filename), Color::Rgb(80, 80, 90))
+                                        ("○", format!("{} (inherit)", filename), theme::TEXT_DIM)
                                     }
                                 }
                             } else {
@@ -1510,7 +1511,7 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
                                 if app_enabled {
                                     ("○", format!("{} (inherit)", filename), muted_color)
                                 } else {
-                                    ("○", format!("{} (inherit)", filename), Color::Rgb(80, 80, 90))
+                                    ("○", format!("{} (inherit)", filename), theme::TEXT_DIM)
                                 }
                             };
 
@@ -1670,7 +1671,7 @@ fn render_add_download_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(app.state.t("dialog-add-download"))
-                .style(Style::default().bg(Color::Black)),
+                .style(Style::default().bg(theme::BG_PRIMARY)),
         );
 
     f.render_widget(paragraph, dialog_area);
@@ -1709,7 +1710,7 @@ fn render_input_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(app.state.input_title.clone())
-                .style(Style::default().bg(Color::Black)),
+                .style(Style::default().bg(theme::BG_PRIMARY)),
         );
     f.render_widget(Clear, chunks[0]);
     f.render_widget(paragraph, chunks[0]);
@@ -1720,7 +1721,7 @@ fn render_input_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
             .block(
                 Block::default()
                     .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-                    .style(Style::default().bg(Color::Black))
+                    .style(Style::default().bg(theme::BG_PRIMARY))
             )
             .style(Style::default().fg(Color::Red))
             .wrap(Wrap { trim: true });
@@ -1846,7 +1847,7 @@ fn render_download_preview_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(app.state.t("dialog-download-preview"))
-                .style(Style::default().bg(Color::Black)),
+                .style(Style::default().bg(theme::BG_PRIMARY)),
         )
         .wrap(Wrap { trim: true });
 
@@ -1968,7 +1969,7 @@ fn render_change_folder_for_item_dialog(app: &TuiApp, f: &mut Frame, area: Rect)
             Block::default()
                 .borders(Borders::ALL)
                 .title(app.state.t("dialog-change-folder"))
-                .style(Style::default().bg(Color::Black)),
+                .style(Style::default().bg(theme::BG_PRIMARY)),
         )
         .alignment(Alignment::Left);
 
@@ -2017,7 +2018,7 @@ fn render_change_save_path_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(app.state.t("dialog-change-save-path"))
-                .style(Style::default().bg(Color::Black)),
+                .style(Style::default().bg(theme::BG_PRIMARY)),
         );
 
     f.render_widget(paragraph, dialog_area);
@@ -2070,7 +2071,7 @@ fn render_confirm_delete_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(app.state.t("dialog-confirm-delete"))
-                .style(Style::default().bg(Color::Black)),
+                .style(Style::default().bg(theme::BG_PRIMARY)),
         )
         .alignment(Alignment::Center);
 
@@ -2124,12 +2125,12 @@ fn status_icon(app: &TuiApp, status: &DownloadStatus) -> String {
 /// Get color for download status
 fn status_color(status: &DownloadStatus) -> Color {
     match status {
-        DownloadStatus::Pending => Color::Rgb(255, 200, 100),    // Warm yellow
-        DownloadStatus::Downloading => Color::Rgb(100, 200, 255), // Sky blue
-        DownloadStatus::Paused => Color::Rgb(150, 150, 160),      // Muted gray
-        DownloadStatus::Completed => Color::Rgb(100, 220, 130),   // Fresh green
-        DownloadStatus::Error => Color::Rgb(255, 100, 100),       // Soft red
-        DownloadStatus::Deleted => Color::Rgb(120, 120, 130),     // Dark gray
+        DownloadStatus::Pending => theme::DL_PENDING,
+        DownloadStatus::Downloading => theme::DL_DOWNLOADING,
+        DownloadStatus::Paused => theme::DL_PAUSED,
+        DownloadStatus::Completed => theme::DL_COMPLETED,
+        DownloadStatus::Error => theme::DL_ERROR,
+        DownloadStatus::Deleted => theme::DL_DELETED,
     }
 }
 
@@ -2333,7 +2334,7 @@ fn render_switch_folder_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(app.state.t("dialog-switch-folder"))
-                .style(Style::default().bg(Color::Black)),
+                .style(Style::default().bg(theme::BG_PRIMARY)),
         )
         .alignment(Alignment::Left);
 
@@ -2394,7 +2395,7 @@ fn render_context_menu(app: &TuiApp, f: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(app.state.t("dialog-actions"))
-                .style(Style::default().bg(Color::Black)),
+                .style(Style::default().bg(theme::BG_PRIMARY)),
         )
         .alignment(Alignment::Left);
 
@@ -2498,7 +2499,7 @@ fn render_folder_context_menu(app: &TuiApp, f: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .style(Style::default().bg(Color::Black)),
+                .style(Style::default().bg(theme::BG_PRIMARY)),
         )
         .alignment(Alignment::Left);
 
