@@ -265,10 +265,43 @@ impl TuiApp {
                 // Handle settings screen clicks
                 self.handle_settings_click(x, y).await?;
             }
+            UiMode::ChangeFolder => {
+                self.handle_change_folder_click(x, y).await?;
+            }
             _ => {}
         }
 
         self.state.mark_dirty();
+        Ok(())
+    }
+
+    /// Handle click inside the Change folder dialog: single click selects and confirms.
+    async fn handle_change_folder_click(&mut self, x: u16, y: u16) -> Result<()> {
+        let hit_idx = {
+            let regions = self.state.click_regions.borrow();
+            regions
+                .folder_picker_items
+                .iter()
+                .find(|(_, rect)| Self::point_in_rect(x, y, rect))
+                .map(|(idx, _)| *idx)
+        };
+
+        match hit_idx {
+            Some(idx) => {
+                let folder_entries = {
+                    let config = self.state.app_state.config.read().await;
+                    config.sorted_folder_entries()
+                };
+                if idx < folder_entries.len() {
+                    self.state.folder_picker_index = idx;
+                    self.commit_change_folder_selection(&folder_entries).await?;
+                }
+            }
+            None => {
+                // Click outside the dialog dismisses it, matching context menu behavior.
+                self.state.ui_mode = UiMode::Normal;
+            }
+        }
         Ok(())
     }
 
@@ -1718,32 +1751,42 @@ impl TuiApp {
                 }
             }
             KeyCode::Enter => {
-                if folder_count > 0 && self.state.folder_picker_index < folder_count {
-                    let (folder_id, _display_name) = &folder_entries[self.state.folder_picker_index];
-                    let target_ids = self.state.get_target_download_ids();
-                    let mut changed = false;
-                    for id in target_ids {
-                        if let Err(e) = self
-                            .manager
-                            .change_folder(id, folder_id.clone(), Some(&self.state.app_state.config))
-                            .await
-                        {
-                            tracing::warn!("Failed to change folder for {}: {}", id, e);
-                        } else {
-                            changed = true;
-                        }
-                    }
-                    if changed {
-                        self.save_queue().await?;
-                    }
-                }
-                self.state.ui_mode = UiMode::Normal;
+                self.commit_change_folder_selection(&folder_entries).await?;
             }
             KeyCode::Esc => {
                 self.state.ui_mode = UiMode::Normal;
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Apply the currently highlighted folder to the selected download(s) and close the dialog.
+    async fn commit_change_folder_selection(
+        &mut self,
+        folder_entries: &[(String, String)],
+    ) -> Result<()> {
+        let folder_count = folder_entries.len();
+        if folder_count > 0 && self.state.folder_picker_index < folder_count {
+            let (folder_id, _display_name) = &folder_entries[self.state.folder_picker_index];
+            let target_ids = self.state.get_target_download_ids();
+            let mut changed = false;
+            for id in target_ids {
+                if let Err(e) = self
+                    .manager
+                    .change_folder(id, folder_id.clone(), Some(&self.state.app_state.config))
+                    .await
+                {
+                    tracing::warn!("Failed to change folder for {}: {}", id, e);
+                } else {
+                    changed = true;
+                }
+            }
+            if changed {
+                self.save_queue().await?;
+            }
+        }
+        self.state.ui_mode = UiMode::Normal;
         Ok(())
     }
 

@@ -1920,6 +1920,11 @@ fn render_change_folder_for_item_dialog(app: &TuiApp, f: &mut Frame, area: Rect)
     };
 
     let mut folder_lines = Vec::new();
+    let mut folder_picker_rects = Vec::new();
+    // Inner area starts 1 cell in from each border.
+    let inner_x = dialog_area.x + 1;
+    let inner_y = dialog_area.y + 1;
+    let inner_width = dialog_area.width.saturating_sub(2);
     for (idx, (folder_id, display_name)) in folder_entries.iter().enumerate() {
         let is_selected = idx == selected_index;
         let is_current = folder_id == &current_folder_id;
@@ -1942,6 +1947,20 @@ fn render_change_folder_for_item_dialog(app: &TuiApp, f: &mut Frame, area: Rect)
             Span::styled(display_name.clone(), style),
             Span::styled(suffix, Style::default().fg(Color::DarkGray)),
         ]));
+
+        let row_y = inner_y + idx as u16;
+        // Only register rows that actually fit within the dialog viewport.
+        if row_y < dialog_area.y + dialog_area.height.saturating_sub(1) {
+            folder_picker_rects.push((
+                idx,
+                Rect {
+                    x: inner_x,
+                    y: row_y,
+                    width: inner_width,
+                    height: 1,
+                },
+            ));
+        }
     }
 
     let paragraph = Paragraph::new(folder_lines)
@@ -1955,6 +1974,11 @@ fn render_change_folder_for_item_dialog(app: &TuiApp, f: &mut Frame, area: Rect)
 
     f.render_widget(Clear, dialog_area);
     f.render_widget(paragraph, dialog_area);
+
+    {
+        let mut regions = app.state.click_regions.borrow_mut();
+        regions.folder_picker_items = folder_picker_rects;
+    }
 }
 
 /// Render change save path dialog (free text input)

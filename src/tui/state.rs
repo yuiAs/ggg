@@ -320,6 +320,8 @@ pub struct ClickableRegions {
     pub context_menu: Option<Rect>,
     pub context_menu_items: Vec<Rect>,
     pub dialog_buttons: Vec<(String, Rect)>,
+    // Folder picker dialog regions (Change folder dialog)
+    pub folder_picker_items: Vec<(usize, Rect)>, // (index, rect) pairs for folder rows
     // Settings screen regions
     pub settings_tabs: Vec<(usize, Rect)>, // (tab_index, rect) pairs for settings tabs
     pub settings_folder_items: Vec<(usize, Rect)>, // (index, rect) pairs for folder list in settings
