@@ -2,7 +2,24 @@
 
 This document describes the directory structure and organization of this application codebase.
 
-## Module Organization
+## Workspace Layout
+
+The repository is a Cargo workspace with the main `ggg` binary at the root
+and three Windows-only sibling crates under `windows/`:
+
+```
+ggg/
+├── src/                  # Main `ggg` binary (TUI download manager)
+└── windows/
+    ├── ggg-ipc/          # lib    — shared IPC protocol & Named Pipe client
+    ├── ggg-dnd/          # binary — Win32 drag & drop GUI helper
+    └── ggg-bridge/       # binary — Chrome Native Messaging host
+```
+
+See the [Helper Components](#helper-components-windows) section below for
+details on the `windows/` crates.
+
+## Module Organization (`src/`)
 
 ### `src/app/` - Application Configuration and State
 
@@ -17,11 +34,16 @@ Contains application-wide configuration, settings resolution, and state manageme
 
 Command-line interface handlers for all CLI operations.
 
-- Batch operations
-- Priority management
-- Script management
-- Debug and diagnostic tools
-- Export/import functionality
+- **mod.rs** - `clap` derive definitions for `Cli`, `Commands`, and per-command action enums
+- **handler.rs** - Top-level dispatcher mapping `Commands` to handler functions
+- **daemon.rs** - Headless daemon mode entry point
+- **bridge.rs** - `ggg bridge install / uninstall / status` (Chrome Native Messaging host registration; Windows-only behavior)
+- **error.rs** - CLI exit codes and error helpers
+- **output.rs** - Output formatting (table / JSON)
+
+Covers add/list/start/pause/remove, batch operations, priority management,
+script management, debug & diagnostic tools, export/import, and bridge
+registration.
 
 ### `src/download/` - Download Engine
 
@@ -44,6 +66,15 @@ File-related operations including naming, sanitization, and metadata handling.
 - **manager.rs** - File management operations
 - **metadata.rs** - File metadata handling (Last-Modified timestamps)
 - **naming.rs** - Cross-platform filename sanitization
+
+### `src/ipc/` - Inter-Process Communication
+
+Server-side IPC for the Named Pipe used by `ggg-dnd` and `ggg-bridge`.
+Wire types live in the workspace crate `ggg-ipc` and are re-exported
+here for backwards compatibility.
+
+- **mod.rs** - Re-exports `ggg_ipc::protocol` as `crate::ipc::protocol`
+- **pipe_server.rs** - Tokio-based Named Pipe server (Windows only); accepts clients on `\\.\pipe\ggg-dnd`, parses JSON-line requests, and forwards `UrlReceived` events to the TUI loop
 
 ### `src/script/` - JavaScript Runtime
 
@@ -103,6 +134,46 @@ Common utilities used across the application.
 - **sanitize.rs** - Input sanitization utilities
 - **url_expansion.rs** - URL pattern expansion (e.g., range notation)
 
+## Helper Components (`windows/`)
+
+Windows-only sibling crates that depend on `ggg-ipc` and talk to the
+running `ggg` instance over `\\.\pipe\ggg-dnd`.
+
+### `windows/ggg-ipc/` — Shared IPC crate (lib)
+
+The single source of truth for the IPC wire format. Pulled in by `ggg`,
+`ggg-dnd`, and `ggg-bridge` so the protocol is defined exactly once.
+
+- **src/protocol.rs** - `IpcRequest` / `IpcResponse` enums and the `\\.\pipe\ggg-dnd` constants (cross-platform)
+- **src/client.rs** - Synchronous Named Pipe client: `send_request`, `send_url`, `ping`, `ClientError` (`#[cfg(windows)]`)
+
+### `windows/ggg-dnd/` — Drag & Drop GUI helper (binary)
+
+Lightweight Win32 GUI window that registers itself as an OLE drop target.
+URLs dropped onto the window are forwarded to `ggg` via the Named Pipe.
+
+- **src/main.rs** - Entry point, single-instance mutex, shared state
+- **src/window.rs** - Win32 window class, message loop, painting
+- **src/drop_target.rs** - `IDropTarget` implementation
+- **src/ipc_client.rs** - Thin wrapper around `ggg-ipc` (per-call connection plus a background ping monitor)
+
+### `windows/ggg-bridge/` — Chrome Native Messaging host (binary)
+
+Console-subsystem binary launched by Chrome as a child process. Reads
+4-byte LE length-prefixed JSON frames on stdin (per the Chrome Native
+Messaging spec) and forwards each request to the Named Pipe through
+`ggg-ipc::send_request`. Loops until Chrome closes stdin, so both
+`sendNativeMessage` (one-shot) and `connectNative` (persistent port)
+work without changes on the host side.
+
+- **src/main.rs** - stdio framing, request dispatch, response writeback
+
+The companion Chrome extension lives at `windows/ggg-extension/` (a
+plain Manifest V3 unpacked extension; not a Cargo crate). Registration
+of the host manifest and `HKCU\Software\Google\Chrome\NativeMessagingHosts`
+registry entry is performed by the `ggg bridge install` subcommand
+(see `src/cli/bridge.rs`).
+
 ## Key Design Patterns
 
 ### Three-Tier Settings Hierarchy
@@ -133,6 +204,16 @@ Key navigation:
 - `D` - Toggle details position (Bottom → Right → Hidden)
 
 The "Completed" node in the folder tree shows download history (completed, failed, deleted items).
+
+### IPC: One Server, Many Clients, One Protocol
+
+`ggg` runs a single `tokio::net::windows::named_pipe` server bound to
+`\\.\pipe\ggg-dnd` (or a `-{pid}` fallback when the default is taken).
+Both `ggg-dnd` (drag & drop GUI) and `ggg-bridge` (Chrome Native
+Messaging host) act as transient clients: open pipe, send one
+newline-delimited JSON request, read the response, close. Sharing the
+`ggg-ipc` crate keeps `IpcRequest` / `IpcResponse` definitions in lock
+step across all three binaries.
 
 ## Testing
 

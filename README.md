@@ -2,15 +2,6 @@
 
 A terminal-based download manager, built in Rust.
 
-## Features
-
-- **Core Download Engine** — HTTP/HTTPS streaming, resume (Range/ETag), concurrent downloads, automatic retry with exponential backoff, queue persistence
-- **Vim-Style TUI** — Keyboard-first interface inspired by vim/lazygit. Split view, tab-based filtering, inline editing, drag & drop URL detection
-- **Three-Tier Settings** — Application → Folder → Queue priority chain. Per-folder save path, concurrency, headers, auto-date directories
-- **Script Hooks (JavaScript)** — 6 lifecycle hooks (`beforeRequest`, `headersReceived`, `authRequired`, `completed`, `error`, `progress`) powered by V8 via deno_core. URL regex filtering, auto-loading from `scripts/` directory. See [Script User Guide](docs/Script_UserGuide.md)
-- **Interactive Dialogs** — Add download, folder management, search/filter, help screen, confirmation prompts
-- **i18n** — English / Japanese (~180 strings via Mozilla Fluent, runtime switchable)
-
 ## Installation
 
 ### From GitHub Releases
@@ -31,9 +22,9 @@ cargo build --release
 ```
 
 ### Requirements
+
 - **Rust** 1.85+ (edition 2024)
-- **Windows Terminal** recommended (for best TUI experience)
-- Any ANSI-compatible terminal works (cmd, PowerShell, WSL, SSH)
+- An ANSI-compatible terminal (Windows Terminal, cmd, PowerShell, WSL, SSH, etc.)
 
 ## Usage
 
@@ -50,6 +41,42 @@ cargo run
 ### Keybindings
 
 For a complete keybindings reference, see the [KeyBindings Guide](docs/KeyBindings.md) or press `?` in the TUI for the help screen.
+
+### Chrome Extension (Add to ggg)
+
+A Chrome extension can push URLs into ggg from the browser's context menu.
+URLs are routed through `ggg-bridge.exe` (a Chrome Native Messaging host)
+into the same Named Pipe used by `ggg-dnd`.
+
+#### Register the bridge
+
+```bash
+# 1. Build the bridge binary alongside ggg
+cargo build --release -p ggg-bridge
+
+# 2. Load windows/ggg-extension/ as an unpacked extension
+#    in chrome://extensions and copy the assigned Extension ID.
+
+# 3. Install the Native Messaging host manifest + registry entry.
+#    --extension-id is required (repeatable for multiple IDs).
+ggg bridge install --extension-id <EXTENSION_ID>
+
+# Verify
+ggg bridge status
+```
+
+#### Unregister
+
+```bash
+ggg bridge uninstall
+```
+
+This removes both `%LOCALAPPDATA%\ggg\com.ggg.bridge.json` and
+`HKCU\Software\Google\Chrome\NativeMessagingHosts\com.ggg.bridge`.
+The extension itself must be removed manually from `chrome://extensions`.
+
+See [`windows/ggg-extension/README.md`](windows/ggg-extension/README.md)
+for extension-side details.
 
 ## Configuration
 
@@ -91,40 +118,67 @@ cargo build --release
 cargo check
 ```
 
-## ggg-dnd (Windows only)
+## Helper Components (Windows)
 
-`ggg-dnd` is a lightweight Win32 GUI helper that accepts browser drag & drop and forwards URLs to the TUI via Named Pipes. This works around Windows Terminal's limited drag & drop support.
+The workspace ships three Windows-only sibling crates under `windows/`
+that complement the main `ggg` binary:
+
+| Crate          | Kind   | Role                                                                           |
+|----------------|--------|--------------------------------------------------------------------------------|
+| `ggg-ipc`      | lib    | Shared IPC protocol types and the synchronous Named Pipe client.               |
+| `ggg-dnd`      | binary | Win32 GUI helper that accepts browser drag & drop and forwards URLs to ggg.    |
+| `ggg-bridge`   | binary | Chrome Native Messaging host. Forwards URLs from the Chrome extension to ggg.  |
+
+All three speak the same line-delimited JSON protocol on `\\.\pipe\ggg-dnd`,
+defined in `ggg-ipc::protocol`. `ggg-dnd` and `ggg-bridge` are clients;
+`ggg` itself is the server.
+
+### ggg-dnd
+
+Lightweight Win32 GUI helper that accepts browser drag & drop and forwards
+URLs to the TUI via Named Pipes.
 
 - Entire window is an OLE drop target — drag a URL from your browser onto it
 - Communicates with `ggg` over Named Pipe (`\\.\pipe\ggg-dnd`)
 - Can be auto-launched from `ggg` via the `Auto Launch ggg-dnd` setting
 
+### ggg-bridge
+
+Chrome Native Messaging host (console subsystem). Reads
+length-prefixed JSON frames from stdin (per the Chrome Native Messaging
+spec) and forwards each request to the same Named Pipe. Stays alive
+until Chrome closes stdin, so both `sendNativeMessage` (one-shot) and
+`connectNative` (persistent port) work. See the *Chrome Extension*
+section above for installation.
+
+### ggg-ipc
+
+Internal library. Both `ggg-dnd` and `ggg-bridge` depend on it for
+`IpcRequest` / `IpcResponse` definitions and the `send_url` / `ping`
+helpers, so the wire protocol is defined exactly once.
+
 ### Building
 
 ```bash
-# Build ggg-dnd only
-cargo build -p ggg-dnd --release
-
-# Build both ggg and ggg-dnd
+# Build everything (default workspace members)
 cargo build --release
+
+# Build a single helper
+cargo build --release -p ggg-dnd
+cargo build --release -p ggg-bridge
 ```
 
-The binary will be at `target/release/ggg-dnd.exe`. Place it in the same directory as `ggg.exe` for auto-launch to work.
+Place the resulting `.exe` files next to `ggg.exe` so auto-launch
+(`ggg-dnd`) and `ggg bridge install` (`ggg-bridge`) can find them
+without an explicit path.
 
 ## Known Issues
 
-### Platform-Specific
-- **Windows Terminal - Drag & Drop:**
-  - **Current Workaround:** D&D is supported via rapid character input detection. When you drag a URL from your browser to the terminal in Normal mode, it will be automatically detected and added to the download queue.
-  - **Known Issue:** crossterm does not fire `Event::Paste` events on Windows Terminal/PowerShell (see [crossterm#737](https://github.com/crossterm-rs/crossterm/issues/737) and [helix#9243](https://github.com/helix-editor/helix/discussions/9243)).
-  - **Future:** When crossterm is fixed, drag & drop will work more reliably via proper paste events.
-  - **Alternative:** Use `a` key to open Add Download dialog, then paste URL with `Ctrl+V`.
-- **cmd.exe/PowerShell:** Limited terminal features, Windows Terminal recommended
-- **WSL:** Works well, but may need terminal emulator with good Unicode support
-
 ### Limitations
-- No GUI version (by design - TUI is the primary interface)
+
+- No GUI version (by design — TUI is the primary interface)
 - Single-threaded downloads per file (chunk-based multi-connection acceleration not yet implemented)
+- `ggg-dnd` and `ggg-bridge` are Windows-only
 
 ## License
 
