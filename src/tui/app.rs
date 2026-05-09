@@ -32,13 +32,6 @@ pub struct TuiApp {
     pub manager: DownloadManager,
     pub should_quit: bool,
     last_update_time: std::time::Instant,
-    /// Pending input buffer for URL detection in Normal mode
-    /// NOTE: This is a workaround for crossterm not firing Event::Paste on Windows Terminal
-    /// See: https://github.com/crossterm-rs/crossterm/issues/737
-    ///      https://github.com/helix-editor/helix/discussions/9243
-    pending_url_input: String,
-    /// Last character input time for detecting paste-like rapid input
-    last_char_input_time: std::time::Instant,
 }
 
 impl TuiApp {
@@ -52,8 +45,6 @@ impl TuiApp {
             manager,
             should_quit: false,
             last_update_time: std::time::Instant::now(),
-            pending_url_input: String::new(),
-            last_char_input_time: std::time::Instant::now(),
         }
     }
 
@@ -67,27 +58,6 @@ impl TuiApp {
                     self.state.update_downloads(&self.manager).await;
                     self.last_update_time = now;
                     self.state.mark_dirty();  // Mark for redraw after data update
-                }
-
-                // Check for pending URL input (drag & drop detection)
-                // NOTE: This is a workaround for crossterm not firing Event::Paste on Windows Terminal
-                // If input has stopped for 300ms, check if it's a valid URL
-                if !self.pending_url_input.is_empty()
-                    && now.duration_since(self.last_char_input_time) >= Duration::from_millis(300)
-                    && self.state.ui_mode == UiMode::Normal
-                {
-                    let pending = self.pending_url_input.clone();
-                    self.pending_url_input.clear();
-
-                    if Self::is_valid_download_url(&pending) {
-                        tracing::info!("Auto-detected URL from rapid input (D&D): {}", pending);
-                        if let Err(e) = self.add_download_from_paste(&pending).await {
-                            tracing::error!("Failed to add download from auto-detected URL: {}", e);
-                        }
-                        self.state.mark_dirty();  // Mark for redraw after adding download
-                    } else {
-                        tracing::debug!("Ignored non-URL rapid input: {}", pending);
-                    }
                 }
             }
             TuiEvent::Input(input) => {
@@ -136,41 +106,32 @@ impl TuiApp {
                 }
             }
             Event::Paste(text) => {
-                // Handle paste events based on current mode
-                let trimmed = text.trim();
-                tracing::debug!("Paste event received in mode {:?}: {} chars", self.state.ui_mode, trimmed.len());
+                tracing::debug!("Paste event in mode {:?}: {} chars", self.state.ui_mode, text.len());
 
-                match self.state.ui_mode {
-                    // AddDownload mode: always add to input buffer
-                    UiMode::AddDownload => {
-                        // Prevent buffer overflow by limiting total length
-                        let available_space = MAX_INPUT_LENGTH.saturating_sub(self.state.input_buffer.len());
-                        if available_space > 0 {
-                            // Use char-based slicing to avoid breaking UTF-8 sequences
-                            let text_to_add: String = text.chars().take(available_space).collect();
-                            self.state.input_buffer.push_str(&text_to_add);
-                            self.state.mark_dirty();  // Mark for redraw after paste
+                if self.state.ui_mode.is_text_input() {
+                    // Text-input modes: append pasted text into the input buffer.
+                    let available = MAX_INPUT_LENGTH.saturating_sub(self.state.input_buffer.len());
+                    if available > 0 {
+                        // Char-based slicing to avoid splitting UTF-8 sequences
+                        let to_add: String = text.chars().take(available).collect();
+                        self.state.input_buffer.push_str(&to_add);
+                        // Keep search query in sync while in Search mode
+                        if self.state.ui_mode == UiMode::Search {
+                            self.state.set_search_query(self.state.input_buffer.clone());
                         }
+                        self.state.mark_dirty();
                     }
-
-                    // Settings screens: ignore paste for now
-                    // Future: may add specific handling for settings input fields
-                    UiMode::Settings | UiMode::FolderEdit => {}
-
-                    // All other modes (except settings): try to add as download if valid URL
-                    _ => {
-                        if Self::is_valid_download_url(trimmed) {
-                            tracing::info!("Valid download URL detected in mode {:?}, adding to queue", self.state.ui_mode);
-                            if let Err(e) = self.add_download_from_paste(trimmed).await {
-                                tracing::error!("Failed to add download from paste: {}", e);
-                            }
-                        } else {
-                            tracing::debug!("Paste ignored in mode {:?}: not a valid download URL", self.state.ui_mode);
+                } else {
+                    // Non-text-input modes: register only if the paste is a downloadable URL.
+                    let trimmed = text.trim();
+                    if Self::is_valid_download_url(trimmed) {
+                        tracing::info!("Paste recognized as URL in mode {:?}, queuing", self.state.ui_mode);
+                        if let Err(e) = self.add_download_from_paste(trimmed).await {
+                            tracing::error!("Failed to add download from paste: {}", e);
                         }
-                        // Future: may add to input buffer for specific modes, e.g.:
-                        // UiMode::Search | UiMode::ChangeSavePath => {
-                        //     self.state.input_buffer.push_str(&text_to_add);
-                        // }
+                        self.state.mark_dirty();
+                    } else {
+                        tracing::debug!("Paste ignored in mode {:?}: not a valid download URL", self.state.ui_mode);
                     }
                 }
             }
@@ -784,31 +745,9 @@ impl TuiApp {
 
         // Handle keys not covered by keybinding resolver
         // (e.g., special behaviors like D for details position toggle)
-        match key {
-            // Toggle details position (D key cycles: Bottom -> Right -> Hidden)
-            KeyCode::Char('D') => {
-                self.state.toggle_details_position();
-            }
-
-            // URL input detection for drag & drop
-            // NOTE: This is a workaround for crossterm not firing Event::Paste on Windows Terminal
-            // When paste events work correctly, this code path won't be triggered
-            KeyCode::Char(c) => {
-                let now = std::time::Instant::now();
-
-                // If this character comes quickly after the last one (< 50ms), treat as paste-like input
-                if now.duration_since(self.last_char_input_time) < Duration::from_millis(50) {
-                    self.pending_url_input.push(c);
-                } else {
-                    // New input sequence starts
-                    self.pending_url_input.clear();
-                    self.pending_url_input.push(c);
-                }
-
-                self.last_char_input_time = now;
-            }
-
-            _ => {}
+        if let KeyCode::Char('D') = key {
+            // Toggle details position (D cycles: Bottom -> Right -> Hidden)
+            self.state.toggle_details_position();
         }
         Ok(())
     }
