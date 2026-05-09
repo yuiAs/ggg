@@ -1,6 +1,6 @@
-/// IPC protocol messages exchanged between ggg (TUI) and ggg-dnd (GUI).
-///
-/// Wire format: each message is a single JSON line terminated by `\n`.
+//! IPC protocol messages exchanged between ggg (TUI) and its IPC clients.
+//!
+//! Wire format: each message is a single JSON line terminated by `\n`.
 use serde::{Deserialize, Serialize};
 
 /// Default Named Pipe name
@@ -9,7 +9,7 @@ pub const DEFAULT_PIPE_NAME: &str = r"\\.\pipe\ggg-dnd";
 /// Prefix for fallback pipe names (appended with `-{pid}`)
 pub const PIPE_NAME_PREFIX: &str = r"\\.\pipe\ggg-dnd-";
 
-/// Request sent from GUI (ggg-dnd) to TUI (ggg)
+/// Request sent from a client (ggg-dnd, ggg-bridge) to ggg.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum IpcRequest {
@@ -22,7 +22,7 @@ pub enum IpcRequest {
     Ping,
 }
 
-/// Response sent from TUI (ggg) to GUI (ggg-dnd)
+/// Response sent from ggg back to a client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum IpcResponse {

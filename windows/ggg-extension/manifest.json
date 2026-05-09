@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Add to ggg",
+  "version": "0.1.0",
+  "description": "Send links and pages to ggg (Great Grimoire Grabber) via the right-click menu.",
+  "permissions": ["contextMenus", "nativeMessaging", "notifications"],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

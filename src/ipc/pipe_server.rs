@@ -2,7 +2,7 @@
 ///
 /// Listens on `\\.\pipe\ggg-dnd` (default) or `\\.\pipe\ggg-dnd-{pid}` (fallback).
 /// Each client connection is handled in a separate tokio task.
-use super::protocol::{IpcRequest, IpcResponse, DEFAULT_PIPE_NAME, PIPE_NAME_PREFIX};
+use ggg_ipc::{IpcRequest, IpcResponse, DEFAULT_PIPE_NAME, PIPE_NAME_PREFIX};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::mpsc;

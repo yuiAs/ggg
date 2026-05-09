@@ -1,6 +1,7 @@
 use super::error;
 use super::output;
-use super::{Commands, ConfigAction, DebugAction, ScriptAction, FolderAction, ExportAction, ImportAction, TestAction};
+use super::{BridgeAction, Commands, ConfigAction, DebugAction, ScriptAction, FolderAction, ExportAction, ImportAction, TestAction};
+use super::bridge;
 use crate::app::config::{Config, FolderConfig};
 use crate::app::state::AppState;
 use crate::download::manager::DownloadManager;
@@ -43,6 +44,13 @@ pub async fn handle_command(
         Commands::Export { action } => handle_export(action, &state, &manager).await,
         Commands::Import { action } => handle_import(action, &state, &manager).await,
         Commands::Test { action } => handle_test(action, &state, &manager).await,
+        Commands::Bridge { action } => match action {
+            BridgeAction::Install { extension_ids, bridge_path } => {
+                bridge::handle_install(extension_ids, bridge_path).await
+            }
+            BridgeAction::Uninstall => bridge::handle_uninstall().await,
+            BridgeAction::Status => bridge::handle_status().await,
+        },
     };
 
     match result {

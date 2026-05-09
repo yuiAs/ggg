@@ -4,6 +4,7 @@ pub mod error;
 pub mod output;
 pub mod handler;
 pub mod daemon;
+pub mod bridge;
 
 /// Great Grimoire Grabber - A classic-style download manager
 #[derive(Parser, Debug)]
@@ -235,6 +236,13 @@ pub enum Commands {
         #[command(subcommand)]
         action: TestAction,
     },
+
+    /// Manage the Chrome Native Messaging bridge (Windows only)
+    Bridge {
+        /// Bridge action
+        #[command(subcommand)]
+        action: BridgeAction,
+    },
 }
 
 /// Configuration actions
@@ -430,6 +438,29 @@ pub enum ImportAction {
         #[arg(long)]
         input: String,
     },
+}
+
+/// Bridge management actions (Chrome Native Messaging host)
+#[derive(Subcommand, Debug)]
+pub enum BridgeAction {
+    /// Install the Native Messaging host manifest and registry entry
+    Install {
+        /// Allowed Chrome extension IDs (repeatable). Each becomes
+        /// `chrome-extension://<ID>/` in the manifest's `allowed_origins`.
+        #[arg(long = "extension-id", value_name = "ID")]
+        extension_ids: Vec<String>,
+
+        /// Override the path to ggg-bridge.exe.
+        /// Defaults to `<ggg.exe directory>/ggg-bridge.exe`.
+        #[arg(long, value_name = "PATH")]
+        bridge_path: Option<std::path::PathBuf>,
+    },
+
+    /// Remove the Native Messaging host manifest and registry entry
+    Uninstall,
+
+    /// Show the currently installed bridge configuration
+    Status,
 }
 
 /// Test utility actions
