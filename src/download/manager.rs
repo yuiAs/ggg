@@ -85,6 +85,13 @@ impl DownloadManager {
         max_retries: u32,
         retry_delay_secs: u64,
     ) -> Self {
+        // Clamp limits to a sane minimum of 1. A zero limit would create a
+        // `Semaphore::new(0)` whose `acquire()` never resolves, permanently
+        // wedging every spawned download task.
+        let max_concurrent = max_concurrent.max(1);
+        let max_concurrent_per_folder = max_concurrent_per_folder.max(1);
+        let parallel_folder_count = parallel_folder_count.max(1);
+
         // Validate and adjust constraint: (folder_limit * active_folder_limit) <= global_limit
         let (adjusted_folder_limit, adjusted_active_limit) =
             if max_concurrent_per_folder * parallel_folder_count > max_concurrent {
@@ -345,9 +352,26 @@ impl DownloadManager {
         let task_url = task.url.clone();
 
         let handle = tokio::spawn(async move {
-            // Acquire both global and folder semaphore permits
-            let _global_permit = global_semaphore.acquire().await.unwrap();
-            let _folder_permit = folder_semaphore.acquire().await.unwrap();
+            // Acquire both global and folder semaphore permits. The semaphores
+            // are never closed in normal operation, but handle the error path
+            // gracefully instead of panicking the download task (which would
+            // leave the task stuck `Downloading` and leak its folder slot).
+            let _global_permit = match global_semaphore.acquire().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    tracing::error!("Global semaphore closed; aborting download '{}'", task.filename);
+                    manager_for_cleanup.abort_unstarted(&queue, task, &folder_id).await;
+                    return;
+                }
+            };
+            let _folder_permit = match folder_semaphore.acquire().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    tracing::error!("Folder semaphore closed; aborting download '{}'", task.filename);
+                    manager_for_cleanup.abort_unstarted(&queue, task, &folder_id).await;
+                    return;
+                }
+            };
 
             tracing::debug!(
                 "Acquired slots for '{}' (folder: {})",
@@ -1150,6 +1174,16 @@ impl DownloadManager {
             );
             false
         }
+    }
+
+    /// Release bookkeeping for a task that was scheduled but failed to acquire a
+    /// concurrency permit. This is a defensive path: the semaphores are never
+    /// closed in normal operation, so this should be unreachable.
+    async fn abort_unstarted(&self, queue: &FolderQueue, mut task: DownloadTask, folder_id: &str) {
+        task.status = DownloadStatus::Error;
+        task.error_message = Some("Internal error: concurrency semaphore closed".to_string());
+        queue.update(task).await; // Downloading -> Error releases the downloading count
+        self.deactivate_folder_if_empty(folder_id).await;
     }
 
     /// Deactivate folder if it has no pending or active downloads (O(1) operation)
