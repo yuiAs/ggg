@@ -591,6 +591,13 @@ impl DownloadManager {
                 info.auth_realm.as_deref().unwrap_or("unknown")));
 
             if let Some(ref sender) = script_sender {
+                // Trust boundary note: scripts loaded from the user-controlled
+                // scripts directory (see ScriptLoader, which skips symlinks and
+                // caps size) may supply credentials for a download. We never
+                // surface *existing* credentials to scripts — username/password
+                // are sent as None — so a script can only inject, not read,
+                // credentials. Gating injection per-script would require a
+                // permissions config; deferred intentionally.
                 let ctx = crate::script::events::AuthRequiredContext {
                     url: task.url.clone(),
                     realm: info.auth_realm.clone(),
