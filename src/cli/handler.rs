@@ -332,17 +332,40 @@ fn set_config_value(config: &mut Config, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the most recent application log file. The daily rolling appender
+/// writes `app.jsonl.YYYY-MM-DD` into the logs directory; the date suffix sorts
+/// chronologically, so the lexicographically greatest name is the newest.
+fn current_log_file() -> Result<Option<PathBuf>> {
+    let logs_dir = crate::util::paths::get_logs_dir()?;
+    if !logs_dir.is_dir() {
+        return Ok(None);
+    }
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(&logs_dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("app.jsonl"))
+                .unwrap_or(false)
+        })
+        .collect();
+    candidates.sort();
+    Ok(candidates.pop())
+}
+
 /// Display application logs
 async fn handle_logs(
     follow: bool,
     level: Option<String>,
     lines: Option<usize>,
 ) -> Result<i32> {
-    let log_file = PathBuf::from("ggg.log");
-
-    if !log_file.exists() {
-        return Err(anyhow::anyhow!("Log file not found: ggg.log"));
-    }
+    let log_file = match current_log_file()? {
+        Some(f) => f,
+        None => {
+            let dir = crate::util::paths::get_logs_dir()?;
+            return Err(anyhow::anyhow!("Log file not found in {}", dir.display()));
+        }
+    };
 
     let lines_to_show = lines.unwrap_or(50);
 
