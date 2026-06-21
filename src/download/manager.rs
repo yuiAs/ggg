@@ -221,18 +221,20 @@ impl DownloadManager {
             handle.abort();
         }
 
-        // Find and remove from the appropriate folder queue
-        let removed = {
-            let queues = self.folder_queues.read().await;
-            let mut removed = None;
-            for queue in queues.values() {
-                if let Some(task) = queue.remove(id).await {
-                    removed = Some(task);
-                    break;
-                }
-            }
-            removed
+        // Snapshot the folder queues (cheap Arc clones) and drop the outer lock
+        // before awaiting on individual queues, so a concurrent writer to
+        // `folder_queues` can't be blocked behind this read guard.
+        let queues: Vec<FolderQueue> = {
+            let guard = self.folder_queues.read().await;
+            guard.values().cloned().collect()
         };
+        let mut removed = None;
+        for queue in queues {
+            if let Some(task) = queue.remove(id).await {
+                removed = Some(task);
+                break;
+            }
+        }
 
         if let Some(task) = &removed {
             // queue.remove() already adjusted the per-folder count; release the
