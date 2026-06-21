@@ -5,7 +5,6 @@ use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -91,25 +90,45 @@ impl ScriptEngine {
     ) -> ScriptResult<v8::Global<v8::Value>> {
         let handle = self.runtime.v8_isolate().thread_safe_handle();
         let timeout = self.timeout;
-        let done = Arc::new(AtomicBool::new(false));
-        let done_clone = done.clone();
 
-        std::thread::spawn(move || {
-            std::thread::sleep(timeout);
-            if !done_clone.load(Ordering::SeqCst) {
-                handle.terminate_execution();
+        // Signal-based watchdog: the worker waits for either a completion
+        // signal or the timeout. Using a channel (instead of sleep + flag)
+        // avoids the race where a fixed sleep fires *after* the script already
+        // returned and terminates the *next* execution. The watchdog also exits
+        // immediately on completion rather than sleeping the full timeout, so
+        // threads do not accumulate under load.
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let watchdog = std::thread::spawn(move || {
+            use std::sync::mpsc::RecvTimeoutError;
+            match rx.recv_timeout(timeout) {
+                Err(RecvTimeoutError::Timeout) => {
+                    handle.terminate_execution();
+                    true // terminated due to timeout
+                }
+                _ => false, // completed in time (signalled or sender dropped)
             }
         });
 
         let result = self.runtime.execute_script(name, code);
-        done.store(true, Ordering::SeqCst);
+
+        // Tell the watchdog we're done and wait for it to settle. After it has
+        // joined we unconditionally clear any pending termination so a late or
+        // spurious terminate cannot poison the next execute_script call.
+        let _ = tx.send(());
+        let timed_out = watchdog.join().unwrap_or(false);
+        self.runtime.v8_isolate().cancel_terminate_execution();
 
         match result {
             Ok(global) => Ok(global),
             Err(e) => {
-                // Reset termination state so runtime can be reused
-                self.runtime.v8_isolate().cancel_terminate_execution();
-                Err(ScriptError::InternalError(e.to_string()))
+                if timed_out {
+                    Err(ScriptError::Timeout {
+                        script: name.to_string(),
+                        timeout_ms: timeout.as_millis() as u64,
+                    })
+                } else {
+                    Err(ScriptError::InternalError(e.to_string()))
+                }
             }
         }
     }
@@ -551,6 +570,58 @@ mod tests {
         assert_eq!(ctx.url, "https://example.com/file.zip");
 
         std::fs::remove_file(script_path).ok();
+    }
+
+    #[test]
+    fn test_timeout_terminates_and_runtime_recovers() {
+        // A handler that loops forever must be terminated by the watchdog, and
+        // crucially the runtime must remain usable afterwards (the watchdog
+        // race previously could leave a pending termination that poisoned the
+        // next execution).
+        let mut engine = ScriptEngine::new(Duration::from_millis(150)).unwrap();
+
+        let temp_dir = std::env::temp_dir();
+        let loop_path = temp_dir.join("test_timeout_loop.js");
+        std::fs::write(
+            &loop_path,
+            "ggg.on('beforeRequest', function(e){ while(true){} });",
+        )
+        .unwrap();
+        engine.load_script(&loop_path).unwrap();
+
+        let script_files = HashMap::new();
+        let mut ctx = BeforeRequestContext {
+            url: "https://example.com/file.zip".to_string(),
+            headers: HashMap::new(),
+            user_agent: None,
+            download_id: None,
+        };
+        // Times out internally; execute_handlers logs and continues.
+        let result = engine.execute_handlers(HookEvent::BeforeRequest, &mut ctx, &script_files);
+        assert!(result.is_ok());
+        std::fs::remove_file(&loop_path).ok();
+
+        // The same engine must still run a normal script correctly.
+        engine.clear_handlers();
+        let ok_path = temp_dir.join("test_timeout_recover.js");
+        std::fs::write(
+            &ok_path,
+            "ggg.on('beforeRequest', function(e){ e.url = 'https://recovered.com'; return true; });",
+        )
+        .unwrap();
+        engine.load_script(&ok_path).unwrap();
+
+        let mut ctx2 = BeforeRequestContext {
+            url: "https://example.com/file.zip".to_string(),
+            headers: HashMap::new(),
+            user_agent: None,
+            download_id: None,
+        };
+        engine
+            .execute_handlers(HookEvent::BeforeRequest, &mut ctx2, &script_files)
+            .unwrap();
+        assert_eq!(ctx2.url, "https://recovered.com");
+        std::fs::remove_file(&ok_path).ok();
     }
 
     #[test]
