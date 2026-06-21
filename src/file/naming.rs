@@ -103,20 +103,47 @@ fn add_unix_millis_to_filename(filename: &str, unix_millis: i64) -> String {
 /// // Returns: "AAA[1768053096643].jpg" (with current timestamp)
 /// ```
 pub fn ensure_unique_filename(base_path: &std::path::Path, filename: &str) -> String {
-    let file_path = base_path.join(filename);
-    
-    if !file_path.exists() {
+    if !base_path.join(filename).exists() {
         // No collision, return original filename
         return filename.to_string();
     }
-    
-    // Collision detected, add Unix time in milliseconds
+
+    // Collision detected, add Unix time in milliseconds. Fall back to 0 if the
+    // system clock is before the epoch (don't panic on a misconfigured clock);
+    // the counter loop below still guarantees a unique name.
     let unix_millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("System time before UNIX epoch")
-        .as_millis() as i64;
-    
-    add_unix_millis_to_filename(filename, unix_millis)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let candidate = add_unix_millis_to_filename(filename, unix_millis);
+    if !base_path.join(&candidate).exists() {
+        return candidate;
+    }
+
+    // The timestamped name also exists (e.g. two downloads resolving in the
+    // same millisecond). Append an incrementing counter until a free name is
+    // found, bounded to avoid an unbounded loop.
+    for counter in 1..=10_000 {
+        let with_counter = add_counter_to_filename(&candidate, counter);
+        if !base_path.join(&with_counter).exists() {
+            return with_counter;
+        }
+    }
+
+    candidate
+}
+
+/// Adds a `(counter)` suffix to a filename before its extension.
+fn add_counter_to_filename(filename: &str, counter: u32) -> String {
+    let path = std::path::Path::new(filename);
+    if let Some(extension) = path.extension() {
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let ext = extension.to_str().unwrap_or("");
+        format!("{}({}).{}", stem, counter, ext)
+    } else {
+        format!("{}({})", filename, counter)
+    }
 }
 
 
@@ -155,6 +182,24 @@ mod filename_uniqueness_tests {
         let temp_dir = std::path::Path::new("./nonexistent_test_dir_12345");
         let result = ensure_unique_filename(temp_dir, "test.jpg");
         assert_eq!(result, "test.jpg");
+    }
+
+    #[test]
+    fn test_ensure_unique_filename_collision_appends_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+
+        let result = ensure_unique_filename(dir.path(), "a.txt");
+        assert_ne!(result, "a.txt");
+        assert!(result.starts_with("a[") && result.ends_with(".txt"), "got {result}");
+        // The resolved name must not already exist.
+        assert!(!dir.path().join(&result).exists());
+    }
+
+    #[test]
+    fn test_add_counter_to_filename() {
+        assert_eq!(add_counter_to_filename("a[123].txt", 1), "a[123](1).txt");
+        assert_eq!(add_counter_to_filename("noext", 2), "noext(2)");
     }
 }
 
