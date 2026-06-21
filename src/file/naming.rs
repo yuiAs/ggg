@@ -5,6 +5,10 @@ const RESERVED_NAMES: &[&str] = &[
     "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
+/// Maximum filename length (single path component). 255 is the limit on NTFS,
+/// ext4, APFS and most other modern filesystems.
+const MAX_FILENAME_LEN: usize = 255;
+
 pub fn sanitize_filename(name: &str) -> String {
     let mut result: String = name
         .chars()
@@ -17,21 +21,47 @@ pub fn sanitize_filename(name: &str) -> String {
         })
         .collect();
 
-    // Check for reserved names
+    // Remove trailing spaces and dots (Windows forbids them). Done *before*
+    // the reserved-name check so names like "NUL " (which trims to "NUL") are
+    // still caught and prefixed.
+    result = result.trim_end_matches(|c| c == ' ' || c == '.').to_string();
+
+    // Check for reserved device names on the trimmed base name
     let upper = result.to_uppercase();
     let base = upper.split('.').next().unwrap_or("");
     if RESERVED_NAMES.contains(&base) {
         result = format!("_{}", result);
     }
 
-    // Remove trailing spaces and dots
-    result = result.trim_end_matches(|c| c == ' ' || c == '.').to_string();
-
     if result.is_empty() {
-        result = "_".to_string();
+        return "_".to_string();
     }
 
-    result
+    // Cap the length to the filesystem component limit, preserving the
+    // extension so the file type is retained.
+    truncate_preserving_extension(&result)
+}
+
+/// Truncate a filename to `MAX_FILENAME_LEN` characters, keeping the extension
+/// intact and shortening the stem.
+fn truncate_preserving_extension(name: &str) -> String {
+    if name.chars().count() <= MAX_FILENAME_LEN {
+        return name.to_string();
+    }
+
+    let path = std::path::Path::new(name);
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext.is_empty() {
+        return name.chars().take(MAX_FILENAME_LEN).collect();
+    }
+
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    // Reserve room for the '.' separator and the extension.
+    let keep = MAX_FILENAME_LEN.saturating_sub(ext.chars().count() + 1);
+    let truncated_stem: String = stem.chars().take(keep).collect();
+    let candidate = format!("{}.{}", truncated_stem, ext);
+    // Pathologically long extensions: hard-truncate as a last resort.
+    candidate.chars().take(MAX_FILENAME_LEN).collect()
 }
 
 /// Adds Unix time in milliseconds to filename before the extension.
@@ -167,11 +197,23 @@ mod tests {
 
     #[test]
     fn test_sanitize_long_filename() {
-        // Filenames over 255 characters are not truncated by this function
-        // (that would be filesystem-specific handling)
-        let long_name = "a".repeat(300);
+        // Filenames over the 255-char component limit are truncated.
+        let long_name = format!("{}.jpg", "a".repeat(300));
         let sanitized = sanitize_filename(&long_name);
-        assert_eq!(sanitized.len(), 300);
+        assert!(sanitized.chars().count() <= 255);
+        // Extension is preserved.
+        assert!(sanitized.ends_with(".jpg"));
+
+        // No extension: still capped.
+        let no_ext = "b".repeat(400);
+        assert_eq!(sanitize_filename(&no_ext).chars().count(), 255);
+    }
+
+    #[test]
+    fn test_sanitize_reserved_name_with_trailing_space() {
+        // "NUL " trims to the reserved name "NUL" and must still be prefixed.
+        assert_eq!(sanitize_filename("NUL "), "_NUL");
+        assert_eq!(sanitize_filename("CON."), "_CON");
     }
 
     #[test]
