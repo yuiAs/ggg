@@ -409,7 +409,9 @@ impl DownloadManager {
                         // Check if we should retry
                         if current_task.retry_count < max_retries {
                             // Calculate exponential backoff delay: base_delay * 2^(retry_count - 1)
-                            let backoff_delay = retry_delay_secs * 2_u64.pow(current_task.retry_count.saturating_sub(1));
+                            // Cap the exponent so a large retry_count can't overflow the shift.
+                            let exponent = current_task.retry_count.saturating_sub(1).min(16);
+                            let backoff_delay = retry_delay_secs.saturating_mul(2_u64.pow(exponent));
                             tracing::info!(
                                 "Retrying download {} in {} seconds (attempt {}/{})",
                                 current_task.filename,
