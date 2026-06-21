@@ -384,11 +384,14 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Truncate a string for display purposes, adding "..." if truncated.
+/// Truncate a string to `max_len` characters for display, adding "..." if
+/// truncated. Operates on `char` boundaries so multibyte UTF-8 (e.g. Unicode
+/// domains or paths) cannot panic the WM_PAINT handler via a byte-index slice.
 fn truncate_display(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", &s[..max_len])
+        let truncated: String = s.chars().take(max_len).collect();
+        format!("{}...", truncated)
     }
 }
