@@ -917,10 +917,15 @@ impl DownloadManager {
             }
         }
 
-        // Mark as completed
+        // Mark as completed. Use the actual bytes written rather than the
+        // advertised size, so the record stays correct when the size was
+        // unknown or the server rejected the Range and restarted from 0.
         task.status = DownloadStatus::Completed;
         task.completed_at = Some(chrono::Utc::now());
-        task.downloaded = task.size.unwrap_or(0);
+        task.downloaded = download_info.bytes_written;
+        if task.size.is_none() {
+            task.size = Some(download_info.bytes_written);
+        }
         task.log_info(format!("Download completed successfully: {}", task.filename));
 
         // Append to completion log

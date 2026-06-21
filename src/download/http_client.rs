@@ -25,6 +25,9 @@ pub struct DownloadInfo {
     pub auth_realm: Option<String>,
     /// The final URL after following redirects (if any)
     pub final_url: Option<String>,
+    /// Total bytes present in the file after the transfer (resume offset plus
+    /// bytes written this session). Zero for metadata-only (`get_info`) calls.
+    pub bytes_written: u64,
 }
 
 /// Parsed HTTP response headers
@@ -218,6 +221,7 @@ impl HttpClient {
             auth_required,
             auth_realm,
             final_url,
+            bytes_written: 0,
         })
     }
 
@@ -389,6 +393,7 @@ impl HttpClient {
             auth_required: false,  // Already checked above, would have returned early if true
             auth_realm: None,
             final_url,
+            bytes_written: downloaded,
         })
     }
 
