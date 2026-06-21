@@ -401,7 +401,8 @@ async fn follow_log_file(log_file: &PathBuf, level: Option<String>) -> Result<()
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
     use std::fs::File;
 
-    let mut file = File::open(log_file)?;
+    let mut current_path = log_file.clone();
+    let mut file = File::open(&current_path)?;
     file.seek(SeekFrom::End(0))?;
 
     let mut reader = BufReader::new(file);
@@ -422,7 +423,16 @@ async fn follow_log_file(log_file: &PathBuf, level: Option<String>) -> Result<()
                     }
                     line.clear();
                 } else {
-                    // No new data, sleep briefly
+                    // No new data. Detect daily rotation: if a newer log file
+                    // exists, switch to it and tail from its start so lines
+                    // written to the new file are not missed.
+                    if let Ok(Some(latest)) = current_log_file() {
+                        if latest != current_path {
+                            current_path = latest;
+                            reader = BufReader::new(File::open(&current_path)?);
+                            continue;
+                        }
+                    }
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
             }
