@@ -52,12 +52,23 @@ impl ScriptLoader {
                 }
             };
 
-            let path = entry.path();
-
-            // Skip directories
-            if path.is_dir() {
-                continue;
+            // The scripts directory is a trust boundary: skip symlinks so a
+            // link cannot pull in a .js file from outside the directory, and
+            // skip directories. `file_type()` does not follow symlinks.
+            match entry.file_type() {
+                Ok(ft) if ft.is_symlink() => {
+                    tracing::warn!("Skipping symlinked script entry: {:?}", entry.path());
+                    continue;
+                }
+                Ok(ft) if ft.is_dir() => continue,
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("Failed to stat directory entry: {}", e);
+                    continue;
+                }
             }
+
+            let path = entry.path();
 
             // Filter for .js files
             if let Some(ext) = path.extension() {

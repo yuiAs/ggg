@@ -265,6 +265,23 @@ impl ScriptEngine {
 
     /// Load and compile a script file
     pub fn load_script(&mut self, path: &Path) -> ScriptResult<()> {
+        // Cap script size before reading: scripts are read fully into memory
+        // and executed, so an oversized file is rejected rather than risking
+        // an out-of-memory read of an untrusted file.
+        const MAX_SCRIPT_BYTES: u64 = 1024 * 1024; // 1 MiB
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() > MAX_SCRIPT_BYTES {
+                return Err(ScriptError::CompilationError {
+                    path: path.to_owned(),
+                    message: format!(
+                        "Script exceeds the {} byte size limit ({} bytes)",
+                        MAX_SCRIPT_BYTES,
+                        meta.len()
+                    ),
+                });
+            }
+        }
+
         // Read script file
         let script_content = std::fs::read_to_string(path).map_err(|e| ScriptError::FileReadError {
             path: path.to_owned(),
