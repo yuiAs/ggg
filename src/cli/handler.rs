@@ -1376,7 +1376,25 @@ async fn handle_clear(
     folder: Option<String>,
 ) -> Result<i32> {
     // Parse status list (comma-separated)
-    let statuses: Vec<&str> = status_str.split(',').map(|s| s.trim()).collect();
+    let statuses: Vec<&str> = status_str
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Validate up front: an unknown/misspelled status would otherwise match
+    // nothing and silently report "Removed 0".
+    const VALID_STATUSES: &[&str] = &["completed", "error", "paused", "pending"];
+    if statuses.is_empty() {
+        return Err(anyhow::anyhow!("No status specified. Valid: {}", VALID_STATUSES.join(", ")));
+    }
+    if let Some(unknown) = statuses.iter().find(|s| !VALID_STATUSES.contains(s)) {
+        return Err(anyhow::anyhow!(
+            "Unknown status '{}'. Valid: {}",
+            unknown,
+            VALID_STATUSES.join(", ")
+        ));
+    }
 
     let tasks = manager.get_all_downloads().await;
     let mut removed_count = 0;
