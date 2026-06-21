@@ -1241,9 +1241,22 @@ impl DownloadManager {
         }
     }
 
+    /// Adjust the application-wide concurrency limit at runtime by growing or
+    /// shrinking the global semaphore's permit pool. Clamped to a minimum of 1
+    /// (a zero limit would deadlock every acquirer). Shrinking only removes
+    /// currently-available permits; permits held by in-flight downloads take
+    /// effect as they complete.
     pub async fn set_max_concurrent(&self, max: usize) {
-        *self.max_concurrent.write().await = max;
-        // Note: Global semaphore cannot be resized, would need to recreate manager
+        let max = max.max(1);
+        let mut current = self.max_concurrent.write().await;
+        match max.cmp(&current) {
+            std::cmp::Ordering::Greater => self.global_semaphore.add_permits(max - *current),
+            std::cmp::Ordering::Less => {
+                self.global_semaphore.forget_permits(*current - max);
+            }
+            std::cmp::Ordering::Equal => {}
+        }
+        *current = max;
     }
 
     pub async fn get_active_count(&self) -> usize {
@@ -1705,14 +1718,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_max_concurrent_zero() {
-        // Test setting max concurrent to 0 (edge case)
+    async fn test_set_max_concurrent_zero_is_clamped() {
+        // A zero limit is clamped to 1 to avoid deadlocking acquirers.
         let manager = DownloadManager::new();
 
         manager.set_max_concurrent(0).await;
 
         let current = *manager.max_concurrent.read().await;
-        assert_eq!(current, 0);
+        assert_eq!(current, 1);
     }
 
     #[tokio::test]
