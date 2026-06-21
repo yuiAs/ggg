@@ -633,10 +633,16 @@ fn render_status_bar(app: &TuiApp, f: &mut Frame, area: Rect) {
             let args = fluent_args! {
                 "folder" => current_folder_name.as_str(),
             };
+            // Action hints depend on which pane is focused.
+            let actions_key = match app.state.focus_pane {
+                FocusPane::FolderTree => "status-normal-actions-folder",
+                FocusPane::DownloadList => "status-normal-actions-download",
+                FocusPane::DetailsPanel => "status-normal-actions-details",
+            };
             let left = format!(
                 "{} | {}{} | {}",
                 t_args("status-normal-folder", Some(&args)),
-                t("status-normal-actions"),
+                t(actions_key),
                 undo_hint,
                 t("status-normal-right")
             );

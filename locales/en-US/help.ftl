@@ -4,7 +4,7 @@
 help-title = Help - Keybindings
 
 help-section-primary = Primary Actions:
-help-key-space = Space      - Toggle download (start/pause)
+help-key-space = s          - Toggle download (start/pause); on folder pane, start all in folder
 help-key-enter = Enter      - Toggle details panel
 help-key-a = a          - Add new download
 help-key-d = d          - Delete download
@@ -16,10 +16,10 @@ help-key-shift-s = S          - Resume all paused downloads
 help-key-shift-p = P          - Pause all active downloads
 
 help-section-multi = Multi-Selection:
-help-key-v = v          - Toggle selection for current item
+help-key-v = Space      - Toggle selection for current item
 help-key-v-shift = V          - Select all visible items
 help-key-esc-clear = Esc        - Clear all selections
-help-key-multi-action = Space/d    - Apply action to all selected items
+help-key-multi-action = s/d        - Apply action to all selected items
 
 help-section-navigation = Navigation:
 help-key-jk = j/k, ↓/↑   - Move down/up

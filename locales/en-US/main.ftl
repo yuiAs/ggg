@@ -25,7 +25,9 @@ column-eta = ETA
 
 # Status bar - Normal mode
 status-normal-folder = 📁 [{$folder}]
-status-normal-actions = ⏯ Space:toggle | ✓ v:select | ➕ a:add | 🗑 d:delete | 📋 m:menu
+status-normal-actions-download = ⏯ s:toggle | ✓ Space:select | ➕ a:add | 🗑 d:delete | 📋 m:menu
+status-normal-actions-folder = ▶ s:start all | ➕ a:add | 📋 m:menu
+status-normal-actions-details = ⏯ s:toggle | 📋 m:menu
 status-normal-undo = Ctrl+Z: undo({$count})
 status-normal-right = 🔄 F:folder | ❓ ?:help | ❌ q:quit
 

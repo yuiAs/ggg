@@ -4,7 +4,7 @@
 help-title = Help - Keybindings
 
 help-section-primary = Primary Actions:
-help-key-space = Space      - Toggle Start/Pause
+help-key-space = s          - Start/Pause 切り替え（フォルダペインでは全アイテム開始）
 help-key-enter = Enter      - Toggle Details Panel
 help-key-a = a          - Add New Download
 help-key-d = d          - Delete Download
@@ -16,10 +16,10 @@ help-key-shift-s = S          - Resume All
 help-key-shift-p = P          - Pause All
 
 help-section-multi = Multi-Select:
-help-key-v = v          - Toggle Selection
+help-key-v = Space      - Toggle Selection
 help-key-v-shift = V          - Select All Visible
 help-key-esc-clear = Esc        - Clear All Selections
-help-key-multi-action = Space/d    - Apply to All Selected
+help-key-multi-action = s/d        - Apply to All Selected
 
 help-section-navigation = Navigation:
 help-key-jk = j/k, ↓/↑   - Move Down/Up

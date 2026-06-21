@@ -665,7 +665,26 @@ impl TuiApp {
                     return Ok(());
                 }
                 KeyAction::ToggleDownload => {
-                    self.toggle_download().await?;
+                    match self.state.focus_pane {
+                        // On the folder tree, `s` starts every startable item in
+                        // the focused folder (mirrors the context menu's Start All).
+                        // CompletedNode yields no folder id, so it is a no-op there.
+                        FocusPane::FolderTree => {
+                            if let Some(folder_id) = self.state.selected_folder_id_from_tree() {
+                                self.manager
+                                    .start_folder_tasks(
+                                        folder_id,
+                                        self.state.app_state.script_sender.clone(),
+                                        self.state.app_state.config.clone(),
+                                    )
+                                    .await;
+                            }
+                        }
+                        // On the download list / details, `s` toggles start/pause.
+                        FocusPane::DownloadList | FocusPane::DetailsPanel => {
+                            self.toggle_download().await?;
+                        }
+                    }
                     return Ok(());
                 }
                 KeyAction::RetryDownload => {

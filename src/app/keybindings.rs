@@ -243,7 +243,10 @@ impl Default for KeybindingsConfig {
 
         // Selection
         bindings.insert(KeyAction::SelectItem, KeyBindingSpec::Single("Enter".into()));
-        bindings.insert(KeyAction::ToggleSelection, KeyBindingSpec::Single("v".into()));
+        bindings.insert(
+            KeyAction::ToggleSelection,
+            KeyBindingSpec::Single("Space".into()),
+        );
         bindings.insert(KeyAction::SelectAll, KeyBindingSpec::Single("V".into()));
         bindings.insert(
             KeyAction::DeselectAll,
@@ -253,7 +256,7 @@ impl Default for KeybindingsConfig {
         // Actions
         bindings.insert(KeyAction::AddDownload, KeyBindingSpec::Single("a".into()));
         bindings.insert(KeyAction::DeleteDownload, KeyBindingSpec::Single("d".into()));
-        bindings.insert(KeyAction::ToggleDownload, KeyBindingSpec::Single("Space".into()));
+        bindings.insert(KeyAction::ToggleDownload, KeyBindingSpec::Single("s".into()));
         bindings.insert(KeyAction::RetryDownload, KeyBindingSpec::Single("r".into()));
         bindings.insert(KeyAction::ResumeAll, KeyBindingSpec::Single("S".into()));
         bindings.insert(KeyAction::PauseAll, KeyBindingSpec::Single("P".into()));
@@ -395,8 +398,12 @@ mod tests {
             Some(KeyAction::AddDownload)
         );
         assert_eq!(
-            resolver.resolve(KeyCode::Char(' '), KeyModifiers::empty()),
+            resolver.resolve(KeyCode::Char('s'), KeyModifiers::empty()),
             Some(KeyAction::ToggleDownload)
+        );
+        assert_eq!(
+            resolver.resolve(KeyCode::Char(' '), KeyModifiers::empty()),
+            Some(KeyAction::ToggleSelection)
         );
 
         // Test ctrl combinations
