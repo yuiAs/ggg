@@ -3,7 +3,7 @@
 /// Listens on `\\.\pipe\ggg-dnd` (default) or `\\.\pipe\ggg-dnd-{pid}` (fallback).
 /// Each client connection is handled in a separate tokio task.
 use ggg_ipc::{IpcRequest, IpcResponse, DEFAULT_PIPE_NAME, PIPE_NAME_PREFIX};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::mpsc;
 
@@ -98,11 +98,32 @@ async fn handle_client(
     pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     event_tx: mpsc::Sender<IpcEvent>,
 ) {
-    let (reader, mut writer) = tokio::io::split(pipe);
-    let mut lines = BufReader::new(reader).lines();
+    // Cap a single message so a client that never sends a newline can't make
+    // the server buffer unboundedly (a local DoS).
+    const MAX_LINE_BYTES: u64 = 64 * 1024;
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        let line = line.trim().to_string();
+    let (reader, mut writer) = tokio::io::split(pipe);
+    let mut reader = BufReader::new(reader);
+
+    loop {
+        let mut buf = Vec::new();
+        let n = match (&mut reader).take(MAX_LINE_BYTES).read_until(b'\n', &mut buf).await {
+            Ok(0) => break, // clean EOF
+            Ok(n) => n,
+            Err(e) => {
+                // Distinguish a read error from EOF instead of silently exiting.
+                tracing::warn!("IPC read error: {}", e);
+                break;
+            }
+        };
+
+        // Hit the cap without a terminating newline: the message is too long.
+        if n as u64 == MAX_LINE_BYTES && !buf.ends_with(b"\n") {
+            tracing::warn!("IPC message exceeds {} bytes; closing connection", MAX_LINE_BYTES);
+            break;
+        }
+
+        let line = String::from_utf8_lossy(&buf).trim().to_string();
         if line.is_empty() {
             continue;
         }
