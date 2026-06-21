@@ -91,7 +91,7 @@ impl CircuitBreaker {
     ///
     /// Returns the current circuit state for the domain
     pub fn can_request(&self, domain: &str) -> CircuitState {
-        let mut circuits = self.circuits.write().unwrap();
+        let mut circuits = self.circuits.write().unwrap_or_else(|e| e.into_inner());
         let circuit = circuits.entry(domain.to_string()).or_default();
 
         match circuit.state {
@@ -130,7 +130,7 @@ impl CircuitBreaker {
 
     /// Record a successful request to a domain
     pub fn record_success(&self, domain: &str) {
-        let mut circuits = self.circuits.write().unwrap();
+        let mut circuits = self.circuits.write().unwrap_or_else(|e| e.into_inner());
         let circuit = circuits.entry(domain.to_string()).or_default();
 
         circuit.failures = 0;
@@ -149,7 +149,7 @@ impl CircuitBreaker {
     ///
     /// Returns true if the circuit was just opened
     pub fn record_failure(&self, domain: &str) -> bool {
-        let mut circuits = self.circuits.write().unwrap();
+        let mut circuits = self.circuits.write().unwrap_or_else(|e| e.into_inner());
         let circuit = circuits.entry(domain.to_string()).or_default();
 
         // Reset failure count if enough time has passed since last success
@@ -192,7 +192,7 @@ impl CircuitBreaker {
 
     /// Get the current state and failure count for a domain
     pub fn get_status(&self, domain: &str) -> (CircuitState, u32) {
-        let circuits = self.circuits.read().unwrap();
+        let circuits = self.circuits.read().unwrap_or_else(|e| e.into_inner());
         circuits
             .get(domain)
             .map(|c| (c.state, c.failures))
@@ -206,21 +206,21 @@ impl CircuitBreaker {
 
     /// Reset circuit for a domain
     pub fn reset(&self, domain: &str) {
-        let mut circuits = self.circuits.write().unwrap();
+        let mut circuits = self.circuits.write().unwrap_or_else(|e| e.into_inner());
         circuits.remove(domain);
         tracing::debug!("Circuit for {} reset", domain);
     }
 
     /// Clear all circuits
     pub fn clear_all(&self) {
-        let mut circuits = self.circuits.write().unwrap();
+        let mut circuits = self.circuits.write().unwrap_or_else(|e| e.into_inner());
         circuits.clear();
         tracing::debug!("All circuits cleared");
     }
 
     /// Get list of domains with open circuits
     pub fn get_open_circuits(&self) -> Vec<String> {
-        let circuits = self.circuits.read().unwrap();
+        let circuits = self.circuits.read().unwrap_or_else(|e| e.into_inner());
         circuits
             .iter()
             .filter(|(_, c)| c.state == CircuitState::Open)
