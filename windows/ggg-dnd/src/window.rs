@@ -34,11 +34,30 @@ pub fn get_main_hwnd() -> isize {
     MAIN_HWND.load(Ordering::Relaxed)
 }
 
+/// RAII guard that uninitializes OLE on drop, so OLE is torn down on every exit
+/// path of `run`, including early returns from failed Win32 calls.
+struct OleGuard;
+impl Drop for OleGuard {
+    fn drop(&mut self) {
+        unsafe { OleUninitialize() };
+    }
+}
+
+/// RAII guard that reclaims the heap-allocated window state pointer on drop,
+/// preventing a leak when window creation fails before the message loop.
+struct StatePtrGuard(*mut SharedState);
+impl Drop for StatePtrGuard {
+    fn drop(&mut self) {
+        unsafe { drop(Box::from_raw(self.0)) };
+    }
+}
+
 /// Run the Win32 GUI. Blocks until the window is closed.
 pub fn run(state: SharedState) -> Result<()> {
     unsafe {
         // Initialize OLE (includes COM) — required for RegisterDragDrop
         OleInitialize(None)?;
+        let _ole_guard = OleGuard;
 
         let hinstance = GetModuleHandleW(None)?;
 
@@ -61,8 +80,10 @@ pub fn run(state: SharedState) -> Result<()> {
         let x = (screen_w - WINDOW_WIDTH) / 2;
         let y = (screen_h - WINDOW_HEIGHT) / 2;
 
-        // Store state pointer in window user data
+        // Store state pointer in window user data. The guard reclaims it on
+        // every exit path, including the `?` early returns below.
         let state_ptr = Box::into_raw(Box::new(state.clone()));
+        let _state_guard = StatePtrGuard(state_ptr);
 
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_ACCEPTFILES,
@@ -97,11 +118,9 @@ pub fn run(state: SharedState) -> Result<()> {
             DispatchMessageW(&msg);
         }
 
-        RevokeDragDrop(hwnd)?;
-        OleUninitialize();
-
-        // Clean up the leaked state pointer
-        let _ = Box::from_raw(state_ptr);
+        // Best-effort: unregister the drop target. OLE teardown and the state
+        // pointer are released by their RAII guards on scope exit.
+        let _ = RevokeDragDrop(hwnd);
 
         Ok(())
     }
