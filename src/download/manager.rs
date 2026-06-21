@@ -165,13 +165,6 @@ impl DownloadManager {
         }
     }
 
-    /// Decrement downloading count for a folder (for cleanup after download completes)
-    async fn decrement_downloading(&self, folder_id: &str) {
-        if let Some(queue) = self.get_folder_queue(folder_id).await {
-            queue.decrement_downloading().await;
-        }
-    }
-
     // ========== Download Operations ==========
 
     pub async fn add_download(&self, mut task: DownloadTask) {
@@ -476,8 +469,11 @@ impl DownloadManager {
                 }
             }
 
-            // Cleanup: Decrement downloading count and deactivate folder if empty
-            manager_for_cleanup.decrement_downloading(&folder_id).await;
+            // Cleanup: the terminal queue operation already adjusted the count
+            // (download_task removes the task on success, or marks it Error on
+            // failure), so only the folder slot needs releasing here. Calling
+            // decrement_downloading here would double-count and wrongly free a
+            // sibling download's slot when several run in the same folder.
             manager_for_cleanup.deactivate_folder_if_empty(&folder_id).await;
         });
 
