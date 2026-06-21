@@ -183,6 +183,23 @@ impl HttpClient {
         Ok(Self { client })
     }
 
+    /// Build the configured client, falling back to a default reqwest client
+    /// (with a logged error) if the custom builder options fail, instead of
+    /// panicking at application startup. Only a completely broken TLS/resolver
+    /// environment — where no client can be built at all — still panics.
+    pub fn new_or_fallback() -> Self {
+        if let Ok(client) = Self::new() {
+            return client;
+        }
+        match reqwest::Client::builder().build() {
+            Ok(client) => {
+                tracing::error!("Configured HTTP client failed to build; using a default client");
+                Self { client }
+            }
+            Err(e) => panic!("Unable to initialize any HTTP client: {e}"),
+        }
+    }
+
     /// Create a new HTTP client with custom user agent
     pub fn with_user_agent(user_agent: &str) -> Result<Self> {
         let client = reqwest::Client::builder()
@@ -466,7 +483,7 @@ impl HttpClient {
 
 impl Default for HttpClient {
     fn default() -> Self {
-        Self::new().unwrap()
+        Self::new_or_fallback()
     }
 }
 

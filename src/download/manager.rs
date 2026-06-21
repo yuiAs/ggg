@@ -117,7 +117,7 @@ impl DownloadManager {
 
         Self {
             folder_queues: Arc::new(RwLock::new(HashMap::new())),
-            http_client: Arc::new(HttpClient::new().unwrap()),
+            http_client: Arc::new(HttpClient::new_or_fallback()),
             active_downloads: Arc::new(RwLock::new(HashMap::new())),
             max_concurrent: Arc::new(RwLock::new(max_concurrent)),
             global_semaphore: Arc::new(Semaphore::new(max_concurrent)),
