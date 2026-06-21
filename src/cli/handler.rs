@@ -1247,14 +1247,13 @@ async fn handle_folder_config(state: &AppState, id: String, set: String) -> Resu
         .ok_or_else(|| anyhow::anyhow!("Folder '{}' not found", id))?;
     let folder = config.folders.get_mut(&folder_id).unwrap();
 
-    // Parse key=value
-    let parts: Vec<&str> = set.split('=').collect();
-    if parts.len() != 2 {
-        return Err(anyhow::anyhow!("Invalid format. Expected: key=value"));
-    }
-
-    let key = parts[0].trim();
-    let value = parts[1].trim();
+    // Parse key=value, splitting only on the first '=' so values may contain
+    // '=' (e.g. a user-agent or header value).
+    let (key, value) = set
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("Invalid format. Expected: key=value"))?;
+    let key = key.trim();
+    let value = value.trim();
 
     // Update configuration
     match key {
