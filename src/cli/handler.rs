@@ -69,23 +69,50 @@ async fn handle_add(
     state: &AppState,
     manager: &DownloadManager,
 ) -> Result<i32> {
-    // Get default directory from config
-    let config = state.config.read().await;
-    let save_path = config.download.default_directory.clone();
+    // Get default directory from config, then release the lock before the loop.
+    let save_path = {
+        let config = state.config.read().await;
+        config.download.default_directory.clone()
+    };
 
-    let mut task = DownloadTask::new(url.clone(), save_path);
+    // Expand range patterns like `[1-10]` into individual URLs so the CLI
+    // matches the TUI's add behavior.
+    let urls = crate::util::url_expansion::expand_url(&url);
 
-    // Set folder if specified
-    if let Some(folder_id) = folder {
-        task.folder_id = folder_id;
+    let mut added = 0;
+    for u in urls {
+        // Reject empty / non-http(s)/ftp URLs up front instead of queueing
+        // garbage that only fails later.
+        if !is_valid_download_url(&u) {
+            eprintln!("Skipping invalid URL: {}", u);
+            continue;
+        }
+
+        let mut task = DownloadTask::new(u.clone(), save_path.clone());
+        if let Some(ref folder_id) = folder {
+            task.folder_id = folder_id.clone();
+        }
+
+        manager.add_download(task.clone()).await;
+        println!("Added download: {} (ID: {})", u, task.id);
+        added += 1;
     }
 
-    manager.add_download(task.clone()).await;
+    if added == 0 {
+        return Err(anyhow::anyhow!("No valid URLs to add"));
+    }
+
     manager.save_queue_to_folders().await?;
-
-    println!("Added download: {} (ID: {})", url, task.id);
-
     Ok(error::SUCCESS)
+}
+
+/// Validate a download URL: must parse and use a scheme the HTTP client
+/// supports. Mirrors the TUI's `is_valid_download_url`.
+fn is_valid_download_url(text: &str) -> bool {
+    match url::Url::parse(text) {
+        Ok(parsed) => matches!(parsed.scheme(), "http" | "https" | "ftp" | "ftps"),
+        Err(_) => false,
+    }
 }
 
 /// List all downloads
