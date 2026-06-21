@@ -30,7 +30,7 @@ tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 
 # JavaScript Engine (V8 via deno_core)
-deno_core = "0.398"
+deno_core = "0.404"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -86,7 +86,7 @@ serial_test = "3.2.0"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_System_Threading"] }
-winreg = "0.55"
+winreg = "0.56"
 
 [profile.release]
 lto = true
