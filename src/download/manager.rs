@@ -870,40 +870,62 @@ impl DownloadManager {
                         .unwrap_or(&task.save_path)
                         .to_path_buf();
 
-                    // Apply file rename if script set newFilename
+                    // Apply file rename if script set newFilename. Scripts are
+                    // untrusted, so sanitize the name to a bare filename:
+                    // sanitize_filename strips path separators and other unsafe
+                    // characters, preventing the rename from escaping file_dir.
                     if let Some(new_name) = modified_ctx.new_filename {
-                        // Check for collision with existing files before renaming
-                        let final_name = crate::file::naming::ensure_unique_filename(
-                            &file_dir, &new_name,
-                        );
-                        let new_path = file_dir.join(&final_name);
-                        tracing::debug!(
-                            from = ?file_path_for_ops,
-                            to = ?new_path,
-                            "Renaming file by script"
-                        );
-                        if let Err(e) = std::fs::rename(&file_path_for_ops, &new_path) {
-                            tracing::error!(
+                        let safe_name = sanitize_filename(&new_name);
+                        if safe_name.is_empty() {
+                            task.log_warn(format!(
+                                "Script newFilename '{}' rejected (empty after sanitization)",
+                                new_name
+                            ));
+                        } else {
+                            // Check for collision with existing files before renaming
+                            let final_name =
+                                crate::file::naming::ensure_unique_filename(&file_dir, &safe_name);
+                            let new_path = file_dir.join(&final_name);
+                            tracing::debug!(
                                 from = ?file_path_for_ops,
                                 to = ?new_path,
-                                "Failed to rename file: {}", e
+                                "Renaming file by script"
                             );
-                        } else {
-                            task.filename = final_name;
-                            task.log_info("File renamed by script".to_string());
+                            if let Err(e) = std::fs::rename(&file_path_for_ops, &new_path) {
+                                tracing::error!(
+                                    from = ?file_path_for_ops,
+                                    to = ?new_path,
+                                    "Failed to rename file: {}", e
+                                );
+                            } else {
+                                task.filename = final_name;
+                                task.log_info("File renamed by script".to_string());
+                            }
                         }
                     }
 
-                    // Apply file move if script set moveToPath
+                    // Apply file move if script set moveToPath. Reject paths
+                    // containing `..` components so an untrusted script cannot
+                    // traverse out to arbitrary locations.
                     if let Some(new_dir_str) = modified_ctx.move_to_path {
-                        let current_path = file_dir.join(&task.filename);
-                        let new_dir = std::path::PathBuf::from(new_dir_str);
-                        let new_path = new_dir.join(&task.filename);
-                        if let Err(e) = std::fs::rename(&current_path, &new_path) {
-                            tracing::error!("Failed to move file: {}", e);
+                        let new_dir = std::path::PathBuf::from(&new_dir_str);
+                        let has_parent_traversal = new_dir
+                            .components()
+                            .any(|c| matches!(c, std::path::Component::ParentDir));
+                        if has_parent_traversal {
+                            task.log_warn(format!(
+                                "Script moveToPath '{}' rejected (contains '..')",
+                                new_dir_str
+                            ));
                         } else {
-                            task.save_path = new_dir;
-                            task.log_info("File moved by script".to_string());
+                            let current_path = file_dir.join(&task.filename);
+                            let new_path = new_dir.join(&task.filename);
+                            if let Err(e) = std::fs::rename(&current_path, &new_path) {
+                                tracing::error!("Failed to move file: {}", e);
+                            } else {
+                                task.save_path = new_dir;
+                                task.log_info("File moved by script".to_string());
+                            }
                         }
                     }
                     task.log_info("completed hook executed".to_string());
