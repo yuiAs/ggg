@@ -258,6 +258,18 @@ impl HttpClient {
             tracing::trace!("Retry response status: {}", response.status());
         }
 
+        // If we sent a Range header but the server ignored it and replied 200
+        // (full body) instead of 206 (partial), appending to the existing
+        // partial file would corrupt it. Restart as a fresh download: the 200
+        // response already carries the complete body, so just rewrite the file.
+        if actual_resume_from.is_some() && response.status().as_u16() == 200 {
+            tracing::warn!(
+                "Server ignored Range header (returned 200 instead of 206); \
+                 restarting download from scratch to avoid file corruption"
+            );
+            actual_resume_from = None;
+        }
+
         // Check for auth requirement BEFORE generic error check
         let status = response.status().as_u16();
         let (auth_required, auth_realm) = Self::check_auth_required(status, response.headers());
@@ -615,6 +627,38 @@ mod tests {
 
         let content = std::fs::read(&file_path).unwrap();
         assert_eq!(content, full_data);
+    }
+
+    #[tokio::test]
+    async fn test_download_resume_ignored_range_returns_200() {
+        // Server ignores the Range header and returns 200 with the full body.
+        // The existing partial file must be overwritten, not appended to.
+        let mock_server = MockServer::start().await;
+
+        let full_data = b"Complete file content";
+        Mock::given(method("GET"))
+            .and(path("/file.txt"))
+            .respond_with(ResponseTemplate::new(200) // Full content, ignoring Range
+                .set_body_bytes(full_data.to_vec())
+                .append_header("Content-Length", full_data.len().to_string()))
+            .mount(&mock_server)
+            .await;
+
+        let client = HttpClient::new().unwrap();
+        let url = format!("{}/file.txt", mock_server.uri());
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("resume200.txt");
+
+        // Pre-existing partial file that must NOT be appended to
+        std::fs::write(&file_path, b"Complete").unwrap();
+
+        client.download_to_file(&url, &file_path, &Default::default(), Some(8), None::<fn(u64, Option<u64>)>)
+            .await
+            .unwrap();
+
+        let content = std::fs::read(&file_path).unwrap();
+        assert_eq!(content, full_data, "file should be rewritten with the full body, not appended");
     }
 
     #[tokio::test]
