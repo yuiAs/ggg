@@ -40,6 +40,14 @@ struct UrlFilter {
     regex: Regex,
 }
 
+/// Validate a generated callback identifier (`__callback_<digits>`) before it
+/// is interpolated into JavaScript source as a bare identifier.
+fn is_valid_callback_id(id: &str) -> bool {
+    id.strip_prefix("__callback_")
+        .map(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+        .unwrap_or(false)
+}
+
 impl UrlFilter {
     /// Create new URL filter from pattern string
     fn new(pattern: String) -> ScriptResult<Self> {
@@ -372,6 +380,19 @@ impl ScriptEngine {
                 }
             }
 
+            // Defense-in-depth: `callback_id` is generated as `__callback_<n>`
+            // and round-tripped through JSON. Validate it before splicing it
+            // into JS source as a bare identifier so a tampered handler entry
+            // cannot construct arbitrary code at this call site.
+            if !is_valid_callback_id(&handler.callback_id) {
+                tracing::error!(
+                    script = ?handler.script_path,
+                    "Rejecting handler with invalid callback id: {:?}",
+                    handler.callback_id
+                );
+                continue;
+            }
+
             // Execute handler with timeout
             let callback_code = format!(
                 "(function() {{
@@ -469,6 +490,17 @@ mod tests {
     fn test_engine_creation() {
         let engine = ScriptEngine::new(Duration::from_secs(30));
         assert!(engine.is_ok());
+    }
+
+    #[test]
+    fn test_is_valid_callback_id() {
+        assert!(is_valid_callback_id("__callback_0"));
+        assert!(is_valid_callback_id("__callback_12345"));
+        assert!(!is_valid_callback_id("__callback_"));
+        assert!(!is_valid_callback_id("__callback_1a"));
+        assert!(!is_valid_callback_id("evil(); //"));
+        assert!(!is_valid_callback_id("globalThis.x"));
+        assert!(!is_valid_callback_id(""));
     }
 
     #[test]
