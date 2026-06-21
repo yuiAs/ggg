@@ -222,19 +222,31 @@ impl DownloadManager {
     }
 
     pub async fn remove_download(&self, id: Uuid) -> Option<DownloadTask> {
-        // Cancel active download if running
+        // Cancel active download if running. Aborting drops the spawned task
+        // without running its cleanup, so the folder slot is released below.
         if let Some(handle) = self.active_downloads.write().await.remove(&id) {
             handle.abort();
         }
-        
+
         // Find and remove from the appropriate folder queue
-        let queues = self.folder_queues.read().await;
-        for queue in queues.values() {
-            if let Some(task) = queue.remove(id).await {
-                return Some(task);
+        let removed = {
+            let queues = self.folder_queues.read().await;
+            let mut removed = None;
+            for queue in queues.values() {
+                if let Some(task) = queue.remove(id).await {
+                    removed = Some(task);
+                    break;
+                }
             }
+            removed
+        };
+
+        if let Some(task) = &removed {
+            // queue.remove() already adjusted the per-folder count; release the
+            // folder activation slot if the folder is now empty.
+            self.deactivate_folder_if_empty(&task.folder_id).await;
         }
-        None
+        removed
     }
 
     pub async fn start_download(
@@ -936,7 +948,8 @@ impl DownloadManager {
     }
 
     pub async fn pause_download(&self, id: Uuid) -> Result<()> {
-        // Abort the download task
+        // Abort the download task. Aborting drops the spawned future, so its
+        // own cleanup never runs — this function releases bookkeeping itself.
         if let Some(handle) = self.active_downloads.write().await.remove(&id) {
             handle.abort();
         }
@@ -944,13 +957,14 @@ impl DownloadManager {
         // Update status and counts
         if let Some(mut task) = self.get_by_id(id).await {
             let folder_id = task.folder_id.clone();
-            if task.status == DownloadStatus::Downloading {
-                self.decrement_downloading(&folder_id).await;
-            }
             task.status = DownloadStatus::Paused;
             if let Some(queue) = self.get_folder_queue(&folder_id).await {
+                // `update()` owns the count: a Downloading/Pending -> Paused
+                // transition decrements the corresponding count exactly once.
                 queue.update(task).await;
             }
+            // Release the folder activation slot if nothing else is active.
+            self.deactivate_folder_if_empty(&folder_id).await;
         }
 
         Ok(())
