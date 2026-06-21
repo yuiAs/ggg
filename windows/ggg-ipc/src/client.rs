@@ -8,6 +8,11 @@ use crate::protocol::{IpcRequest, IpcResponse};
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+use std::time::Duration;
+
+/// Default time to wait for a server response before giving up. Prevents a
+/// hung or half-open server from blocking the caller forever.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Errors returned from the synchronous pipe client.
 #[derive(Debug)]
@@ -41,8 +46,39 @@ impl fmt::Display for ClientError {
 
 impl std::error::Error for ClientError {}
 
-/// Send a single request and return the parsed response.
+/// Send a single request and return the parsed response, bounded by
+/// `DEFAULT_TIMEOUT` so a hung server cannot block the caller indefinitely.
 pub fn send_request(pipe_name: &str, request: &IpcRequest) -> Result<IpcResponse, ClientError> {
+    send_request_timeout(pipe_name, request, DEFAULT_TIMEOUT)
+}
+
+/// Like [`send_request`] but with an explicit timeout. The blocking transaction
+/// runs on a worker thread; if it does not complete within `timeout`, a
+/// `TimedOut` error is returned (the worker is abandoned and exits with the
+/// process — std pipe reads cannot be cancelled mid-flight).
+pub fn send_request_timeout(
+    pipe_name: &str,
+    request: &IpcRequest,
+    timeout: Duration,
+) -> Result<IpcResponse, ClientError> {
+    let pipe_name = pipe_name.to_string();
+    let request = request.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(send_request_blocking(&pipe_name, &request));
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(_) => Err(ClientError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "IPC request timed out waiting for a server response",
+        ))),
+    }
+}
+
+/// The blocking request/response transaction (open, write, read one line).
+fn send_request_blocking(pipe_name: &str, request: &IpcRequest) -> Result<IpcResponse, ClientError> {
     let pipe = open_pipe(pipe_name).map_err(ClientError::Connect)?;
     let mut reader = BufReader::new(&pipe);
     let mut writer = &pipe;
