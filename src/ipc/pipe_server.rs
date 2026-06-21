@@ -78,6 +78,9 @@ async fn accept_loop(pipe_name: &str, event_tx: mpsc::Sender<IpcEvent>) {
         // Wait for a client to connect
         if let Err(e) = server.connect().await {
             tracing::error!("Failed to accept pipe connection: {}", e);
+            // Back off before retrying so a persistent connect failure does
+            // not spin the accept loop.
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             continue;
         }
 
