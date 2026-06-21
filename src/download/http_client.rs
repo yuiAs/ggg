@@ -357,6 +357,26 @@ impl HttpClient {
 
         file.flush().await?;
 
+        // Guard against a silently truncated transfer. If the server advertised
+        // a length and the connection closed early, the byte stream simply ends
+        // without an error, which would otherwise be reported as a successful
+        // download of a partial file. Returning an error lets the retry/resume
+        // path recover. For a 206 resume, `size` is the partial body length, so
+        // the expected total is the resume offset plus that length.
+        let expected_total = match actual_resume_from {
+            Some(offset) => size.map(|partial| offset + partial),
+            None => size,
+        };
+        if let Some(expected) = expected_total {
+            if downloaded < expected {
+                return Err(anyhow!(
+                    "Incomplete download: received {} of {} bytes (connection closed early)",
+                    downloaded,
+                    expected
+                ));
+            }
+        }
+
         Ok(DownloadInfo {
             size,
             resume_supported,
