@@ -140,8 +140,10 @@ impl ScriptEngine {
         handlers.clear();
         drop(handlers);
 
-        // Also clear JavaScript-side handler registry and reset callback ID
-        if let Err(e) = self.runtime.execute_script(
+        // Also clear JavaScript-side handler registry and reset callback ID.
+        // Routed through the timeout wrapper: `ggg._handlers`/`clear` could be
+        // overridden by a loaded script, so this must be bounded too.
+        if let Err(e) = self.execute_with_timeout(
             "<ggg:clear>",
             "ggg._handlers.clear(); ggg._nextCallbackId = 0;".to_string(),
         ) {
@@ -152,7 +154,27 @@ impl ScriptEngine {
     }
 
     pub fn new(timeout: Duration) -> ScriptResult<Self> {
-        let mut runtime = JsRuntime::new(RuntimeOptions::default());
+        // Cap the V8 heap so a runaway script (e.g. `while(true) a.push(x)`)
+        // cannot exhaust process memory. The near-heap-limit callback
+        // terminates execution and raises the limit just enough to let the
+        // termination unwind instead of letting V8 hard-abort the process.
+        const MAX_HEAP_BYTES: usize = 256 * 1024 * 1024;
+        let create_params = v8::CreateParams::default().heap_limits(0, MAX_HEAP_BYTES);
+        let mut runtime = JsRuntime::new(RuntimeOptions {
+            create_params: Some(create_params),
+            ..Default::default()
+        });
+
+        let isolate_handle = runtime.v8_isolate().thread_safe_handle();
+        runtime.add_near_heap_limit_callback(move |current, _initial| {
+            tracing::error!(
+                "Script exceeded the V8 heap limit (~{} bytes); terminating execution",
+                current
+            );
+            isolate_handle.terminate_execution();
+            // Grow the limit so V8 can unwind via termination rather than abort.
+            current.saturating_mul(2)
+        });
 
         let handlers = Arc::new(Mutex::new(HashMap::new()));
 
@@ -248,10 +270,11 @@ impl ScriptEngine {
                 message: e.to_string(),
             })?;
 
-        // Extract registered handlers from JavaScript
+        // Extract registered handlers from JavaScript. Bounded by the timeout:
+        // a script could install a malicious `toJSON`/getter that loops during
+        // `JSON.stringify`, which would otherwise hang the executor thread.
         let global = self
-            .runtime
-            .execute_script(
+            .execute_with_timeout(
                 "<ggg:handlers>",
                 "JSON.stringify(Array.from(ggg._handlers.entries()))".to_string(),
             )
@@ -291,11 +314,11 @@ impl ScriptEngine {
                 });
             }
         }
+        drop(registry); // Release the handlers lock before re-entering the runtime
 
         // Clear JavaScript handlers map for next script
         // (Callbacks remain in globalThis, handlers map is just for registration)
-        self.runtime
-            .execute_script("<ggg:clear_map>", "ggg._handlers.clear()".to_string())
+        self.execute_with_timeout("<ggg:clear_map>", "ggg._handlers.clear()".to_string())
             .map_err(|e| {
                 ScriptError::InternalError(format!("Failed to clear handlers map: {}", e))
             })?;
@@ -413,8 +436,7 @@ impl ScriptEngine {
     /// Flush buffered ggg.log() messages to tracing
     fn flush_log_buffer(&mut self, script_path: &Path) {
         let global = match self
-            .runtime
-            .execute_script("<ggg:log>", "ggg._logBuffer.splice(0)".to_string())
+            .execute_with_timeout("<ggg:log>", "ggg._logBuffer.splice(0)".to_string())
         {
             Ok(g) => g,
             Err(_) => return,
