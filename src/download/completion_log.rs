@@ -78,32 +78,35 @@ impl From<&DownloadTask> for CompletedEntry {
 pub async fn append_completion(task: &DownloadTask) -> Result<()> {
     let logs_dir = crate::util::paths::get_logs_dir()?;
 
-    // Create logs directory if it doesn't exist
-    std::fs::create_dir_all(&logs_dir)?;
-
     // Generate log filename based on current date (local timezone)
     let today = chrono::Local::now().format("%Y%m%d").to_string();
     let log_file = logs_dir.join(format!("{}.jsonl", today));
 
-    // Convert task to CompletedEntry
+    // Convert task to CompletedEntry and serialize to single-line JSON
     let entry = CompletedEntry::from(task);
-
-    // Serialize to single-line JSON
     let json_line = serde_json::to_string(&entry)?;
 
-    // Atomic append: open with append mode and write
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_file)?;
-
-    writeln!(file, "{}", json_line)?;
-    file.sync_all()?; // Ensure written to disk
+    // The filesystem work — create_dir_all, open, append, and especially the
+    // fsync — blocks for potentially many milliseconds. Run it on the blocking
+    // pool so it doesn't stall the async runtime (and every other download's
+    // progress) on each completion.
+    let log_file_for_msg = log_file.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        std::fs::create_dir_all(&logs_dir)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_file)?;
+        writeln!(file, "{}", json_line)?;
+        file.sync_all()?; // Ensure written to disk
+        Ok(())
+    })
+    .await??;
 
     tracing::debug!(
         "Appended completion log: {} to {}",
         task.filename,
-        log_file.display()
+        log_file_for_msg.display()
     );
 
     Ok(())
