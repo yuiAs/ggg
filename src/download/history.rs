@@ -9,6 +9,12 @@ use uuid::Uuid;
 
 use super::task::DownloadTask;
 
+/// Maximum number of history items retained in memory/on disk. Older entries
+/// are evicted FIFO so a long-running session can't grow history without bound.
+/// Completed downloads are also persisted to the daily completion log, so
+/// evicted entries are not lost from the on-disk record.
+const MAX_HISTORY: usize = 1000;
+
 /// Download history storage
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DownloadHistory {
@@ -25,8 +31,14 @@ impl DownloadHistory {
     /// Adds a task to history
     pub fn add(&mut self, task: DownloadTask) {
         // Avoid duplicates by ID
-        if !self.items.iter().any(|t| t.id == task.id) {
-            self.items.push(task);
+        if self.items.iter().any(|t| t.id == task.id) {
+            return;
+        }
+        self.items.push(task);
+        // Evict the oldest entries once over the cap.
+        if self.items.len() > MAX_HISTORY {
+            let overflow = self.items.len() - MAX_HISTORY;
+            self.items.drain(0..overflow);
         }
     }
 
@@ -149,6 +161,15 @@ mod tests {
 
         assert!(removed.is_some());
         assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_history_caps_at_max() {
+        let mut history = DownloadHistory::new();
+        for _ in 0..(MAX_HISTORY + 50) {
+            history.add(create_test_task(DownloadStatus::Completed));
+        }
+        assert_eq!(history.len(), MAX_HISTORY);
     }
 
     #[test]
