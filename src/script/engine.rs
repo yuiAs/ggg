@@ -144,16 +144,22 @@ impl ScriptEngine {
     /// Create new script engine with timeout
     /// Clear all registered handlers (used when reloading scripts)
     pub fn clear_handlers(&mut self) {
-        let mut handlers = self.handlers.lock().unwrap();
+        let mut handlers = self.handlers.lock().unwrap_or_else(|e| e.into_inner());
         handlers.clear();
         drop(handlers);
 
         // Also clear JavaScript-side handler registry and reset callback ID.
-        // Routed through the timeout wrapper: `ggg._handlers`/`clear` could be
-        // overridden by a loaded script, so this must be bounded too.
+        // Delete the `globalThis.__callback_*` functions too, otherwise stale
+        // callbacks (and their captured closures) leak for the runtime's
+        // lifetime when a reload registers fewer handlers. Routed through the
+        // timeout wrapper since a loaded script could override these globals.
         if let Err(e) = self.execute_with_timeout(
             "<ggg:clear>",
-            "ggg._handlers.clear(); ggg._nextCallbackId = 0;".to_string(),
+            "for (const k of Object.keys(globalThis)) { \
+                 if (k.startsWith('__callback_')) delete globalThis[k]; \
+             } \
+             ggg._handlers.clear(); ggg._nextCallbackId = 0;"
+                .to_string(),
         ) {
             tracing::warn!("Failed to clear JavaScript handlers: {}", e);
         }
@@ -311,7 +317,7 @@ impl ScriptEngine {
             serde_json::from_str(&handlers_json)
                 .map_err(|e| ScriptError::InternalError(format!("Failed to parse handlers: {}", e)))?;
 
-        let mut registry = self.handlers.lock().unwrap();
+        let mut registry = self.handlers.lock().unwrap_or_else(|e| e.into_inner());
 
         for (event_name, handlers_list) in handlers_data {
             let event = HookEvent::from_str(&event_name).ok_or_else(|| {
@@ -359,7 +365,7 @@ impl ScriptEngine {
         ctx: &mut C,
         effective_script_files: &std::collections::HashMap<String, bool>,
     ) -> ScriptResult<bool> {
-        let handlers = self.handlers.lock().unwrap();
+        let handlers = self.handlers.lock().unwrap_or_else(|e| e.into_inner());
         let event_handlers = match handlers.get(&event) {
             Some(h) if !h.is_empty() => h.clone(),
             _ => return Ok(true), // No handlers, continue
@@ -455,16 +461,15 @@ impl ScriptEngine {
                 *ctx = C::from_json(modified_ctx.clone())?;
             }
 
-            // Check if handler returned false (stop propagation)
-            if let Some(handler_result) = result.get("result") {
-                if handler_result.is_boolean() && !handler_result.as_bool().unwrap() {
-                    tracing::debug!(
-                        event = ?event,
-                        script = ?handler.script_path,
-                        "Handler stopped propagation"
-                    );
-                    return Ok(false); // Stop processing
-                }
+            // Check if handler returned false (stop propagation). Context
+            // mutations above are applied first, then the stop is honored.
+            if let Some(false) = result.get("result").and_then(|v| v.as_bool()) {
+                tracing::debug!(
+                    event = ?event,
+                    script = ?handler.script_path,
+                    "Handler stopped propagation"
+                );
+                return Ok(false); // Stop processing
             }
         }
 
@@ -490,7 +495,7 @@ impl ScriptEngine {
     pub fn handler_count(&self, event: HookEvent) -> usize {
         self.handlers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&event)
             .map(|h| h.len())
             .unwrap_or(0)
