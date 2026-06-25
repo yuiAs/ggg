@@ -72,14 +72,29 @@ fn parse_content_disposition_filename(value: &str) -> Option<String> {
     if let Some(pos) = value.find("filename=") {
         let rest = &value[pos + "filename=".len()..];
         let name = if rest.starts_with('"') {
-            // Quoted: take content between first pair of quotes
-            rest[1..].split('"').next().unwrap_or("")
+            // Quoted-string: read until the closing quote, honoring `\"`
+            // (and `\\`) backslash escapes so an escaped quote inside the value
+            // doesn't terminate it early.
+            let mut out = String::new();
+            let mut chars = rest[1..].chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => {
+                        if let Some(escaped) = chars.next() {
+                            out.push(escaped);
+                        }
+                    }
+                    '"' => break,
+                    _ => out.push(c),
+                }
+            }
+            out
         } else {
             // Unquoted: take until `;` or end
-            rest.split(';').next().unwrap_or("").trim()
+            rest.split(';').next().unwrap_or("").trim().to_string()
         };
         if !name.is_empty() {
-            return Some(name.to_string());
+            return Some(name);
         }
     }
 
@@ -810,6 +825,16 @@ mod tests {
         assert_eq!(
             parse_content_disposition_filename(value),
             Some("テスト.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn test_content_disposition_escaped_quote() {
+        // A backslash-escaped quote inside the quoted value must not end it early.
+        let value = r#"attachment; filename="a\"b.txt""#;
+        assert_eq!(
+            parse_content_disposition_filename(value),
+            Some(r#"a"b.txt"#.to_string())
         );
     }
 
