@@ -471,6 +471,11 @@ pub struct TuiState {
     /// every settings keypress.
     pub cached_script_files: Vec<String>,
 
+    /// Cached `(folder_id, display_name)` entries, refreshed every tick from
+    /// config. Folder-picker dialogs render from this owned snapshot so they
+    /// never vanish on a transient `config.try_read()` failure.
+    pub cached_folder_entries: Vec<(String, String)>,
+
     /// Keyboard shortcut resolver
     pub keybinding_resolver: crate::app::keybindings::KeybindingResolver,
 
@@ -534,6 +539,7 @@ impl TuiState {
             click_regions: RefCell::new(ClickableRegions::default()),
             folder_context_menu_index: 0,
             cached_script_files: Vec::new(),
+            cached_folder_entries: Vec::new(),
             keybinding_resolver,
             #[cfg(windows)]
             ipc_pipe_name: None,
@@ -564,6 +570,9 @@ impl TuiState {
         }
         let entries = config.sorted_folder_entries();
         drop(config);
+
+        // Snapshot for folder-picker dialogs (rendered without taking the lock).
+        self.cached_folder_entries = entries.clone();
 
         self.tree_items = entries
             .into_iter()

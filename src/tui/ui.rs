@@ -1161,6 +1161,13 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
                 )));
             }
         }
+    } else {
+        // Config briefly locked (e.g. mid-edit): show a stable placeholder
+        // instead of a blank panel.
+        lines.push(Line::from(Span::styled(
+            "Loading configuration…",
+            Style::default().fg(muted_color),
+        )));
     }
 
     // Add help text
@@ -1193,8 +1200,6 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
 
 /// Render folder list (left panel)
 fn render_folder_list(app: &TuiApp, f: &mut Frame, area: Rect) {
-    let config = app.state.app_state.config.try_read();
-
     // Modern color palette
     let selected_color = theme::ACCENT_SELECTED;
     let border_color = theme::BORDER_INACTIVE;
@@ -1206,8 +1211,9 @@ fn render_folder_list(app: &TuiApp, f: &mut Frame, area: Rect) {
     let mut folder_items = Vec::new();
     let mut folder_count = 0;
 
-    if let Ok(config) = config {
-        let folder_entries = config.sorted_folder_entries();
+    {
+        // Render from the per-tick folder snapshot (no config lock at render).
+        let folder_entries = &app.state.cached_folder_entries;
         folder_count = folder_entries.len();
 
         for (idx, (_folder_id, display_name)) in folder_entries.iter().enumerate() {
@@ -1870,12 +1876,9 @@ fn render_download_preview_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
 /// Render change folder dialog (centered overlay)
 /// Render folder picker dialog for changing an item's application folder
 fn render_change_folder_for_item_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
-    let config = match app.state.app_state.config.try_read() {
-        Ok(cfg) => cfg,
-        Err(_) => return,
-    };
-    let folder_entries = config.sorted_folder_entries();
-    drop(config);
+    // Render from the per-tick snapshot so the dialog never vanishes on a
+    // transient config lock contention.
+    let folder_entries = app.state.cached_folder_entries.clone();
 
     let selected_index = app.state.folder_picker_index;
 
@@ -2251,19 +2254,9 @@ fn format_progress_with_bar(downloaded: u64, total: Option<u64>) -> String {
 
 /// Render context menu (popup actions)
 fn render_switch_folder_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
-    // Get folder list from config
-    // Note: This is called from within the TUI render loop which is already async,
-    // but we can't make this function async. We use try_read() instead.
-    let config = match app.state.app_state.config.try_read() {
-        Ok(cfg) => cfg,
-        Err(_) => {
-            // If we can't acquire the lock, just show an empty list
-            // This shouldn't happen in practice since config updates are rare
-            return;
-        }
-    };
-    let folder_entries = config.sorted_folder_entries();
-    drop(config);
+    // Render from the per-tick folder snapshot rather than taking the config
+    // lock during render, so the dialog never vanishes on lock contention.
+    let folder_entries = app.state.cached_folder_entries.clone();
 
     let selected_index = app.state.folder_picker_index;
 
