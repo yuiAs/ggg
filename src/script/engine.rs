@@ -49,9 +49,13 @@ fn is_valid_callback_id(id: &str) -> bool {
 }
 
 impl UrlFilter {
-    /// Create new URL filter from pattern string
-    fn new(pattern: String) -> ScriptResult<Self> {
-        // Convert simple patterns to regex
+    /// Create new URL filter from a pattern string.
+    ///
+    /// Patterns containing `*`, `^`, or `$` are treated as regular expressions;
+    /// anything else is matched as an escaped substring. (The `regex` crate is
+    /// linear-time, so there is no catastrophic-backtracking risk; the size
+    /// limit below only bounds a pathologically large compiled program.)
+    fn new(pattern: String, script: &Path) -> ScriptResult<Self> {
         let regex_pattern = if pattern.contains('*') || pattern.contains('^') || pattern.contains('$')
         {
             // Already looks like regex
@@ -61,12 +65,13 @@ impl UrlFilter {
             regex::escape(&pattern)
         };
 
-        let regex = Regex::new(&regex_pattern).map_err(|_| {
-            ScriptError::InvalidFilter {
-                script: "unknown".to_string(),
+        let regex = regex::RegexBuilder::new(&regex_pattern)
+            .size_limit(1 << 20) // 1 MiB compiled-program cap
+            .build()
+            .map_err(|_| ScriptError::InvalidFilter {
+                script: script.display().to_string(),
                 pattern: pattern.clone(),
-            }
-        })?;
+            })?;
 
         Ok(Self { pattern, regex })
     }
@@ -347,7 +352,7 @@ impl ScriptEngine {
                     .to_string();
 
                 let filter = if let Some(filter_str) = handler_data["filter"].as_str() {
-                    Some(UrlFilter::new(filter_str.to_string())?)
+                    Some(UrlFilter::new(filter_str.to_string(), path)?)
                 } else {
                     None
                 };
@@ -541,14 +546,14 @@ mod tests {
 
     #[test]
     fn test_url_filter_simple_match() {
-        let filter = UrlFilter::new("pbs.twimg.com".to_string()).unwrap();
+        let filter = UrlFilter::new("pbs.twimg.com".to_string(), Path::new("test.js")).unwrap();
         assert!(filter.matches("https://pbs.twimg.com/media/image.jpg"));
         assert!(!filter.matches("https://example.com/file.zip"));
     }
 
     #[test]
     fn test_url_filter_regex_match() {
-        let filter = UrlFilter::new("^https://.*\\.twimg\\.com".to_string()).unwrap();
+        let filter = UrlFilter::new("^https://.*\\.twimg\\.com".to_string(), Path::new("test.js")).unwrap();
         assert!(filter.matches("https://pbs.twimg.com/media/image.jpg"));
         assert!(filter.matches("https://video.twimg.com/video.mp4"));
         assert!(!filter.matches("http://pbs.twimg.com/image.jpg"));
