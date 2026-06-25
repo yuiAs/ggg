@@ -721,10 +721,16 @@ impl DownloadManager {
         // Ensure directory exists (handles auto-date subdirectories)
         tokio::fs::create_dir_all(&resolved_save_path).await?;
 
-        // Resume: only for interrupted tasks (Paused/Error) with existing partial file
+        // Resume: only for interrupted tasks (Paused/Error) with an existing
+        // partial file. A single async `metadata` call avoids the exists()+
+        // metadata() TOCTOU and the blocking std::fs call on the runtime;
+        // any error (missing/unreadable) means "start fresh".
         let mut file_path = resolved_save_path.join(&task.filename);
-        let resume_from = if is_resuming && file_path.exists() && task.resume_supported {
-            Some(std::fs::metadata(&file_path)?.len())
+        let resume_from = if is_resuming && task.resume_supported {
+            match tokio::fs::metadata(&file_path).await {
+                Ok(meta) => Some(meta.len()),
+                Err(_) => None,
+            }
         } else {
             None
         };
