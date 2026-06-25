@@ -348,9 +348,6 @@ pub struct TuiState {
     /// Selected index in the download list
     pub selected_index: usize,
 
-    /// Scroll offset for viewport
-    pub scroll_offset: usize,
-
     /// Currently focused pane in 3-pane layout
     pub focus_pane: FocusPane,
 
@@ -477,7 +474,6 @@ impl TuiState {
             folder_names: std::collections::HashMap::new(),
             history_items: Vec::new(),
             selected_index: 0,
-            scroll_offset: 0,
             focus_pane: FocusPane::DownloadList,
             tree_items: vec![FolderTreeItem::Folder("default".to_string()), FolderTreeItem::CompletedNode],
             tree_selected_index: 0,

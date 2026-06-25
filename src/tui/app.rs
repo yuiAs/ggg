@@ -143,9 +143,10 @@ impl TuiApp {
                     self.state.selected_index = filtered_count - 1;
                     self.state.table_state_mut().select(Some(self.state.selected_index));
                 }
-                // Adjust scroll offset if needed
-                if self.state.scroll_offset >= filtered_count {
-                    self.state.scroll_offset = filtered_count.saturating_sub(1);
+                // Clamp the tree cursor too, in case the folder list shrank.
+                let tree_len = self.state.tree_items.len();
+                if tree_len > 0 && self.state.tree_selected_index >= tree_len {
+                    self.state.tree_selected_index = tree_len - 1;
                 }
                 tracing::debug!("Terminal resized to {}x{}", _width, _height);
             }
