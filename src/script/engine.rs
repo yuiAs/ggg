@@ -17,7 +17,10 @@ use std::time::Duration;
 /// - URL filtering
 pub struct ScriptEngine {
     runtime: JsRuntime,
-    handlers: Arc<Mutex<HashMap<HookEvent, Vec<EventHandler>>>>,
+    // Per-event handlers are stored behind an `Arc` so dispatch can clone the
+    // list pointer (O(1)) to release the lock, instead of deep-cloning the
+    // vector (and its compiled `Regex` filters) on every event.
+    handlers: Arc<Mutex<HashMap<HookEvent, Arc<Vec<EventHandler>>>>>,
     timeout: Duration,
 }
 
@@ -343,7 +346,8 @@ impl ScriptEngine {
                 ScriptError::InvalidEventName(event_name.clone())
             })?;
 
-            let event_handlers = registry.entry(event).or_insert_with(Vec::new);
+            let event_handlers =
+                Arc::make_mut(registry.entry(event).or_insert_with(|| Arc::new(Vec::new())));
 
             for handler_data in handlers_list {
                 let callback_id = handler_data["callbackId"]
@@ -386,13 +390,13 @@ impl ScriptEngine {
     ) -> ScriptResult<bool> {
         let handlers = self.handlers.lock().unwrap_or_else(|e| e.into_inner());
         let event_handlers = match handlers.get(&event) {
-            Some(h) if !h.is_empty() => h.clone(),
+            Some(h) if !h.is_empty() => Arc::clone(h),
             _ => return Ok(true), // No handlers, continue
         };
-        drop(handlers); // Release lock
+        drop(handlers); // Release lock (cheap Arc clone above keeps the list)
 
         // Execute each handler in order
-        for handler in event_handlers {
+        for handler in event_handlers.iter() {
             // Check if script file is enabled (default to enabled if not in map)
             let filename = handler
                 .script_path
