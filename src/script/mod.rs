@@ -14,17 +14,20 @@
 ///
 /// # Usage
 ///
+/// The `ScriptManager` API is synchronous (the V8 runtime is single-threaded
+/// and !Send; it runs on a dedicated executor thread — see `message`/`executor`).
+///
 /// ```rust,ignore
 /// use crate::script::{ScriptManager, events::*};
 /// use crate::app::config::ScriptConfig;
 ///
 /// // Initialize
-/// let mut manager = ScriptManager::new(&config.scripts).await?;
-/// manager.load_all_scripts().await?;
+/// let mut manager = ScriptManager::new(&config.scripts)?;
+/// manager.load_all_scripts()?;
 ///
-/// // Trigger events
-/// let mut ctx = BeforeRequestContext { ... };
-/// manager.trigger_before_request(&mut ctx).await?;
+/// // Trigger events (effective_script_files merges app + folder overrides)
+/// let mut ctx = BeforeRequestContext { /* ... */ };
+/// manager.trigger_before_request(&mut ctx, &effective_script_files)?;
 /// ```
 
 pub mod api;

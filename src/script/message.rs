@@ -1,8 +1,8 @@
 /// Message passing infrastructure for script execution across thread boundaries
 ///
-/// Since rustyscript::Runtime is !Send, we cannot share ScriptManager across
-/// threads. Instead, we run a dedicated script executor thread and communicate
-/// via channels.
+/// Since `deno_core::JsRuntime` (V8) is !Send, we cannot share ScriptManager
+/// across threads. Instead, we run a dedicated script executor thread and
+/// communicate via channels.
 
 use super::error::ScriptResult;
 use super::events::*;
