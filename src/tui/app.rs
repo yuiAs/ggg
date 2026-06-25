@@ -2121,14 +2121,18 @@ impl TuiApp {
 
         let ids_to_delete = self.state.get_target_download_ids();
         if !ids_to_delete.is_empty() {
+            // Collect the deleted tasks as one batch so undo restores them all.
+            let mut batch = Vec::new();
             for id in ids_to_delete {
-                // Save to undo history before deleting
                 if let Some(mut task) = self.manager.get_by_id(id).await {
                     task.status = DownloadStatus::Deleted;
                     self.manager.add_to_history(task.clone()).await;
-                    self.state.delete_history.push(task);
+                    batch.push(task);
                 }
                 self.manager.remove_download(id).await;
+            }
+            if !batch.is_empty() {
+                self.state.delete_history.push(batch);
             }
             self.state.clear_selections();
             self.save_queue().await?;
@@ -2137,17 +2141,21 @@ impl TuiApp {
 
         // Limit history size to prevent excessive memory usage
         if self.state.delete_history.len() > MAX_UNDO_HISTORY {
-            self.state.delete_history.drain(0..self.state.delete_history.len() - MAX_UNDO_HISTORY);
+            let overflow = self.state.delete_history.len() - MAX_UNDO_HISTORY;
+            self.state.delete_history.drain(0..overflow);
         }
 
         Ok(())
     }
 
-    /// Undo last delete operation
+    /// Undo last delete operation (restores the whole batch).
     async fn undo_delete(&mut self) -> Result<()> {
-        if let Some(task) = self.state.delete_history.pop() {
-            self.add_download_with_auto_start(task).await?;
-            tracing::info!("Undid delete operation");
+        if let Some(batch) = self.state.delete_history.pop() {
+            let count = batch.len();
+            for task in batch {
+                self.add_download_with_auto_start(task).await?;
+            }
+            tracing::info!("Undid delete of {} download(s)", count);
         }
         Ok(())
     }

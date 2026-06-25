@@ -450,8 +450,9 @@ pub struct TuiState {
     /// Context menu: selected menu item index
     pub context_menu_index: usize,
 
-    /// Undo/Redo: stack of deleted downloads for undo functionality
-    pub delete_history: Vec<DownloadTask>,
+    /// Undo stack of deleted downloads. Each entry is one delete *operation*
+    /// (a batch), so a multi-selection delete is undone as a single unit.
+    pub delete_history: Vec<Vec<DownloadTask>>,
 
     /// Download preview: information fetched from server
     pub preview_info: Option<crate::download::http_client::DownloadInfo>,
