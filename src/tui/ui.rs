@@ -1076,7 +1076,8 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
             .max_concurrent_per_folder
             .unwrap_or(max_concurrent);
         let active_folders = config.download.parallel_folder_count.unwrap_or(1);
-        let calculated = max_per_folder * active_folders;
+        // Saturating: these come from unbounded user-entered config values.
+        let calculated = max_per_folder.saturating_mul(active_folders);
         let constraint_met = calculated <= max_concurrent;
 
         let constraint_style = if constraint_met {
