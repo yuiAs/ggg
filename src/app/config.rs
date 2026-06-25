@@ -444,6 +444,44 @@ impl Config {
             Self::save_folder_config(folder_name, folder_config)?;
         }
 
+        // Step 4: Make save authoritative — remove on-disk folder directories
+        // that are no longer in `self.folders`, so a removed folder is not
+        // resurrected by `load_all_folder_configs` on the next launch.
+        Self::remove_orphan_folder_dirs(&self.folders)?;
+
+        Ok(())
+    }
+
+    /// Remove folder directories on disk whose key is not present in `folders`.
+    fn remove_orphan_folder_dirs(
+        folders: &HashMap<String, FolderConfig>,
+    ) -> anyhow::Result<()> {
+        let config_dir = crate::util::paths::find_config_directory()?;
+        if !config_dir.exists() {
+            return Ok(());
+        }
+
+        for entry in std::fs::read_dir(&config_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            // Only consider folder dirs (those holding a settings.toml).
+            if !path.is_dir() || !path.join("settings.toml").exists() {
+                continue;
+            }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if !folders.contains_key(name) {
+                    match std::fs::remove_dir_all(&path) {
+                        Ok(()) => tracing::info!("Removed orphaned folder directory: {}", name),
+                        Err(e) => tracing::warn!(
+                            "Failed to remove orphaned folder directory '{}': {}",
+                            name,
+                            e
+                        ),
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
