@@ -87,7 +87,11 @@ pub fn format_download(task: &DownloadTask, detailed: bool) -> String {
 /// Format multiple downloads for display (human or JSON)
 pub fn format_downloads(tasks: &[DownloadTask], json: bool) -> String {
     if json {
-        serde_json::to_string_pretty(tasks).unwrap_or_else(|_| "[]".to_string())
+        // Surface a serialization failure as an error object rather than "[]",
+        // which is indistinguishable from an empty queue.
+        serde_json::to_string_pretty(tasks).unwrap_or_else(|e| {
+            format!("{{\"error\": \"failed to serialize downloads: {}\"}}", e)
+        })
     } else {
         if tasks.is_empty() {
             return "No downloads in queue.".to_string();

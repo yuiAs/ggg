@@ -202,7 +202,9 @@ fn write_registry(manifest_path: &Path) -> Result<()> {
     let (key, _disp) = hkcu
         .create_subkey_with_flags(REGISTRY_KEY, KEY_WRITE)
         .with_context(|| format!("Failed to create registry key HKCU\\{}", REGISTRY_KEY))?;
-    key.set_value("", &manifest_path.to_string_lossy().to_string())
+    // Write the path as an OsStr (REG_SZ from UTF-16) so it is preserved
+    // exactly, rather than lossily round-tripping through a UTF-8 String.
+    key.set_value("", &manifest_path.as_os_str())
         .context("Failed to set registry default value")?;
     Ok(())
 }
