@@ -395,9 +395,20 @@ impl ScriptEngine {
         };
         drop(handlers); // Release lock (cheap Arc clone above keeps the list)
 
-        // Execute each handler in order
+        // Handler contract:
+        // - handlers run in registration order;
+        // - each handler's context mutations are applied before its return
+        //   value is inspected, so a handler that mutates `ctx` and then returns
+        //   `false` (stop) still has its mutation applied;
+        // - a handler that throws is logged and skipped (treated as a no-op),
+        //   so a broken script does not abort the remaining handlers.
         for handler in event_handlers.iter() {
-            // Check if script file is enabled (default to enabled if not in map)
+            // Check if the script file is enabled. Keys come from config, which
+            // stores enable/disable by file name; the loader only loads
+            // top-level `.js` files (no subdirectories), so basenames are
+            // unique and cannot collide. An entry absent from the map means the
+            // user set no preference, so it defaults to enabled (new scripts are
+            // on by default).
             let filename = handler
                 .script_path
                 .file_name()
