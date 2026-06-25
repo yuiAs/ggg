@@ -91,6 +91,10 @@ impl LocalizationManager {
             .map_err(|e| anyhow::anyhow!("Invalid locale ID '{}': {:?}", locale_id, e))?;
 
         let mut bundle = FluentBundle::new(vec![lang_id]);
+        // Disable Unicode bidi isolation (FSI/PDI, U+2068/U+2069) around
+        // interpolated arguments. Those control characters render as stray
+        // glyphs in the CLI and the Win32 GUI's DrawTextW output.
+        bundle.set_use_isolating(false);
 
         let resources = Self::load_from_external(locale_id)
             .unwrap_or_else(|| Self::load_from_embedded(locale_id));
