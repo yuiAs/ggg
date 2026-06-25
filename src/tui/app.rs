@@ -842,9 +842,8 @@ impl TuiApp {
 
                         self.state.ui_mode = UiMode::Normal;
                         self.state.input_buffer.clear();
-                    } else {
+                    } else if let Some(single_url) = urls_to_add.into_iter().next() {
                         // Single URL with preview
-                        let single_url = urls_to_add.into_iter().next().unwrap();
                         match self.fetch_download_info(&single_url).await {
                             Ok(info) => {
                                 self.state.preview_info = Some(info);
@@ -858,6 +857,10 @@ impl TuiApp {
                                 self.state.ui_mode = UiMode::DownloadPreview;
                             }
                         }
+                    } else {
+                        // No URLs to add (e.g. an invalid range pattern) — back to normal.
+                        self.state.ui_mode = UiMode::Normal;
+                        self.state.input_buffer.clear();
                     }
                 } else {
                     self.state.ui_mode = UiMode::Normal;
