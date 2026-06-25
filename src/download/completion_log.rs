@@ -78,8 +78,9 @@ impl From<&DownloadTask> for CompletedEntry {
 pub async fn append_completion(task: &DownloadTask) -> Result<()> {
     let logs_dir = crate::util::paths::get_logs_dir()?;
 
-    // Generate log filename based on current date (local timezone)
-    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    // Generate log filename based on the current UTC date, matching the UTC
+    // timestamps stored in each entry (and the app log's UTC daily rotation).
+    let today = chrono::Utc::now().format("%Y%m%d").to_string();
     let log_file = logs_dir.join(format!("{}.jsonl", today));
 
     // Convert task to CompletedEntry and serialize to single-line JSON

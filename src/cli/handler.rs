@@ -457,8 +457,8 @@ async fn handle_history(
     // Collect all log files
     let mut log_files = Vec::new();
     if today {
-        // Only today's log
-        let today_str = chrono::Local::now().format("%Y%m%d").to_string();
+        // Only today's log (UTC, matching how completion logs are named)
+        let today_str = chrono::Utc::now().format("%Y%m%d").to_string();
         let today_file = logs_dir.join(format!("{}.jsonl", today_str));
         if today_file.exists() {
             log_files.push(today_file);
