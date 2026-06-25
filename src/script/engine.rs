@@ -227,10 +227,18 @@ impl ScriptEngine {
                     return true;
                 },
 
-                // Logging function (buffered, flushed to tracing by Rust)
+                // Logging function (buffered, flushed to tracing by Rust).
+                // Bounded so a script logging in a tight loop can't grow the
+                // buffer until it hits the heap limit.
                 _logBuffer: [],
+                _maxLogBuffer: 1000,
+                _pushLog: function(message) {
+                    if (ggg._logBuffer.length < ggg._maxLogBuffer) {
+                        ggg._logBuffer.push(message);
+                    }
+                },
                 log: function(message) {
-                    ggg._logBuffer.push(String(message));
+                    ggg._pushLog(String(message));
                 },
 
                 // Config access (stub for now)
@@ -245,19 +253,19 @@ impl ScriptEngine {
             // Prevents Deno core console from writing directly to stdout
             globalThis.console = {
                 log: function(...args) {
-                    ggg._logBuffer.push(args.map(String).join(' '));
+                    ggg._pushLog(args.map(String).join(' '));
                 },
                 warn: function(...args) {
-                    ggg._logBuffer.push('[WARN] ' + args.map(String).join(' '));
+                    ggg._pushLog('[WARN] ' + args.map(String).join(' '));
                 },
                 error: function(...args) {
-                    ggg._logBuffer.push('[ERROR] ' + args.map(String).join(' '));
+                    ggg._pushLog('[ERROR] ' + args.map(String).join(' '));
                 },
                 info: function(...args) {
-                    ggg._logBuffer.push(args.map(String).join(' '));
+                    ggg._pushLog(args.map(String).join(' '));
                 },
                 debug: function(...args) {
-                    ggg._logBuffer.push('[DEBUG] ' + args.map(String).join(' '));
+                    ggg._pushLog('[DEBUG] ' + args.map(String).join(' '));
                 },
             };
         "#;
