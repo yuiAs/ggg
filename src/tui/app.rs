@@ -202,7 +202,7 @@ impl TuiApp {
             }
             UiMode::FolderContextMenu => {
                 // Check for menu item click
-                if let Some(action_idx) = self.hit_test_folder_context_menu_item(x, y) {
+                if let Some(action_idx) = self.hit_test_context_menu_item(x, y) {
                     self.state.folder_context_menu_index = action_idx;
                     let is_completed = self.state.is_viewing_completed_node();
                     if let Some(action) = self.state.get_selected_folder_menu_action(is_completed) {
@@ -335,17 +335,6 @@ impl TuiApp {
 
     /// Hit test for context menu items
     fn hit_test_context_menu_item(&self, x: u16, y: u16) -> Option<usize> {
-        let regions = self.state.click_regions.borrow();
-        for (idx, rect) in regions.context_menu_items.iter().enumerate() {
-            if Self::point_in_rect(x, y, rect) {
-                return Some(idx);
-            }
-        }
-        None
-    }
-
-    /// Hit test for folder context menu items
-    fn hit_test_folder_context_menu_item(&self, x: u16, y: u16) -> Option<usize> {
         let regions = self.state.click_regions.borrow();
         for (idx, rect) in regions.context_menu_items.iter().enumerate() {
             if Self::point_in_rect(x, y, rect) {
