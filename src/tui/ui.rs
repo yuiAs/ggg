@@ -1411,8 +1411,7 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
                 // Field 6: User Agent
                 let user_agent_str = folder_config
                     .user_agent
-                    .as_ref()
-                    .map(|s| s.clone())
+                    .clone()
                     .unwrap_or_else(|| app.state.t("settings-value-inherit"));
                 detail_lines.push(make_field_line(6, &app.state.t("settings-folder-user-agent"), user_agent_str));
 
@@ -1912,7 +1911,7 @@ fn render_change_folder_for_item_dialog(app: &TuiApp, f: &mut Frame, area: Rect)
 
     let max_folder_width = folder_entries
         .iter()
-        .map(|(_id, name)| name.len())
+        .map(|(_id, name)| UnicodeWidthStr::width(name.as_str()))
         .max()
         .unwrap_or(20);
 
@@ -2294,7 +2293,7 @@ fn render_switch_folder_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
     // Calculate dialog dimensions
     let max_folder_width = folder_entries
         .iter()
-        .map(|(_id, name)| name.len())
+        .map(|(_id, name)| UnicodeWidthStr::width(name.as_str()))
         .max()
         .unwrap_or(20);
 
