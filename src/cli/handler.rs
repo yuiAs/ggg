@@ -106,6 +106,11 @@ async fn handle_add(
     Ok(error::SUCCESS)
 }
 
+/// Parse a task ID string, returning a uniform error on malformed input.
+fn parse_task_id(id_str: &str) -> Result<Uuid> {
+    Uuid::parse_str(id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))
+}
+
 /// Validate a download URL: must parse and use a scheme the HTTP client
 /// supports. Mirrors the TUI's `is_valid_download_url`.
 fn is_valid_download_url(text: &str) -> bool {
@@ -131,7 +136,7 @@ async fn handle_start(
     manager: &DownloadManager,
     wait: bool,
 ) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     // Check if download exists
     let task = manager.get_by_id(id).await
@@ -203,7 +208,7 @@ async fn handle_pause(
     id_str: String,
     manager: &DownloadManager,
 ) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     // Check if download exists
     let task = manager.get_by_id(id).await
@@ -222,7 +227,7 @@ async fn handle_remove(
     id_str: String,
     manager: &DownloadManager,
 ) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     let task = manager.remove_download(id).await
         .ok_or_else(|| anyhow::anyhow!("Download not found"))?;
@@ -236,7 +241,7 @@ async fn handle_remove(
 
 /// Show download status
 async fn handle_status(id_str: String, manager: &DownloadManager, json: bool) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     let task = manager.get_by_id(id).await
         .ok_or_else(|| anyhow::anyhow!("Download not found"))?;
@@ -719,7 +724,7 @@ async fn handle_debug_folder_slots(manager: &DownloadManager, json: bool) -> Res
 
 /// Show detailed task information
 async fn handle_debug_task(id_str: String, manager: &DownloadManager, json: bool) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     let task = manager.get_by_id(id).await
         .ok_or_else(|| anyhow::anyhow!("Task not found"))?;
@@ -1487,7 +1492,7 @@ async fn handle_priority(
     id_str: String,
     priority: u8,
 ) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     manager.set_priority(id, priority).await?;
     manager.save_queue_to_folders().await?;
@@ -1506,7 +1511,7 @@ async fn handle_move(
     before: Option<String>,
     folder: Option<String>,
 ) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     // Check that only one operation is specified
     let ops_count = [to_top, to_bottom, before.is_some(), folder.is_some()]
