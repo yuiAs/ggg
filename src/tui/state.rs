@@ -447,29 +447,12 @@ pub struct TuiState {
     /// Folder context menu: selected menu item index
     pub folder_context_menu_index: usize,
 
-    /// Cache for filtered history (only used for history search)
-    /// NOTE: Cache is no longer used for folder downloads since we access them directly
-    filtered_cache: RefCell<FilterCache>,
-
     /// Keyboard shortcut resolver
     pub keybinding_resolver: crate::app::keybindings::KeybindingResolver,
 
     /// IPC Named Pipe name (Windows only, set when pipe server starts)
     #[cfg(windows)]
     pub ipc_pipe_name: Option<String>,
-}
-
-/// Cache for filtered downloads (legacy - kept for API compatibility)
-#[derive(Debug, Clone, Default)]
-struct FilterCache {
-    key: Option<FilterCacheKey>,
-    ids: Vec<Uuid>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FilterCacheKey {
-    search_query: String,
-    history_len: usize,
 }
 
 impl TuiState {
@@ -527,7 +510,6 @@ impl TuiState {
             table_state: RefCell::new(table_state),
             click_regions: RefCell::new(ClickableRegions::default()),
             folder_context_menu_index: 0,
-            filtered_cache: RefCell::new(FilterCache::default()),
             keybinding_resolver,
             #[cfg(windows)]
             ipc_pipe_name: None,
@@ -590,10 +572,14 @@ impl TuiState {
     /// - For completed node: returns history items with optional search filter
     pub fn current_downloads(&self) -> Vec<&DownloadTask> {
         if self.is_viewing_completed_node() {
-            // History view with search
+            // History view with search; lowercase the query once, not per item.
+            if self.search_query.is_empty() {
+                return self.history_items.iter().collect();
+            }
+            let query = self.search_query.to_lowercase();
             self.history_items
                 .iter()
-                .filter(|task| self.matches_search(task))
+                .filter(|task| task.filename.to_lowercase().contains(&query))
                 .collect()
         } else {
             // Direct folder access - no filtering needed
@@ -613,22 +599,6 @@ impl TuiState {
     /// TODO: Remove after full migration
     pub fn filtered_downloads(&self) -> Vec<&DownloadTask> {
         self.current_downloads()
-    }
-
-    /// Invalidate the filter cache (call when downloads/history change)
-    /// NOTE: Cache is no longer used, but kept for API compatibility
-    pub fn invalidate_filter_cache(&self) {
-        let mut cache = self.filtered_cache.borrow_mut();
-        cache.key = None;
-        cache.ids.clear();
-    }
-
-    fn matches_search(&self, task: &DownloadTask) -> bool {
-        if self.search_query.is_empty() {
-            true
-        } else {
-            task.filename.to_lowercase().contains(&self.search_query.to_lowercase())
-        }
     }
 
     /// Get total count of downloads across all folders
