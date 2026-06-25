@@ -46,6 +46,10 @@ impl AppState {
         // Spawn script executor thread if scripts enabled
         let script_sender = if config.scripts.enabled {
             let (tx, rx) = std::sync::mpsc::channel();
+            // The thread reports whether ScriptManager initialized so we can
+            // drop the sender on failure — otherwise script_sender would stay
+            // Some and every later send would fail silently (a no-op).
+            let (init_tx, init_rx) = std::sync::mpsc::channel();
 
             let script_config = config.scripts.clone();
 
@@ -55,11 +59,13 @@ impl AppState {
                 let mut script_manager = match crate::script::ScriptManager::new(&script_config) {
                     Ok(sm) => {
                         tracing::info!("ScriptManager created successfully");
+                        let _ = init_tx.send(true);
                         sm
                     }
                     Err(e) => {
                         tracing::error!("Failed to create ScriptManager: {}", e);
                         tracing::warn!("Script executor thread exiting due to initialization failure");
+                        let _ = init_tx.send(false);
                         return;
                     }
                 };
@@ -75,8 +81,18 @@ impl AppState {
                 executor::script_executor_loop(rx, script_manager);
             });
 
-            tracing::info!("Script executor thread spawned");
-            Some(tx)
+            // Wait for the init result (ScriptManager::new is quick). If it
+            // failed or the thread died, disable scripting cleanly.
+            match init_rx.recv() {
+                Ok(true) => {
+                    tracing::info!("Script executor thread ready");
+                    Some(tx)
+                }
+                _ => {
+                    tracing::warn!("Scripting disabled: executor failed to initialize");
+                    None
+                }
+            }
         } else {
             None
         };
