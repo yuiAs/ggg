@@ -728,6 +728,11 @@ impl TuiApp {
                     self.state.show_details = !self.state.show_details;
                     return Ok(());
                 }
+                KeyAction::CycleDetailsPosition => {
+                    // Cycle details pane position: Bottom -> Right -> Hidden
+                    self.state.toggle_details_position();
+                    return Ok(());
+                }
                 KeyAction::OpenSearch => {
                     // Search is only available in the History view
                     if self.state.is_viewing_completed_node() {
@@ -758,12 +763,6 @@ impl TuiApp {
             }
         }
 
-        // Handle keys not covered by keybinding resolver
-        // (e.g., special behaviors like D for details position toggle)
-        if let KeyCode::Char('D') = key {
-            // Toggle details position (D cycles: Bottom -> Right -> Hidden)
-            self.state.toggle_details_position();
-        }
         Ok(())
     }
 
