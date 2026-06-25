@@ -10,7 +10,6 @@ use crate::script::message::ScriptRequest;
 use crate::script::sender;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use tokio::sync::{RwLock, Semaphore};
 use tokio::task::JoinHandle;
@@ -753,68 +752,47 @@ impl DownloadManager {
             task.log_info("Starting fresh download".to_string());
         }
 
-        // Download with progress callback using atomic throttling
-        // This avoids spawning tasks for throttled updates, reducing overhead
+        // Progress is delivered over a bounded channel to a single consumer
+        // task, rather than spawning a task per update. The sync callback uses
+        // `try_send`, so when the consumer is behind the update is dropped and
+        // superseded by the next one (natural coalescing) — and the terminal
+        // 100% update is never silently throttled away. The script progress
+        // hook is rate-limited inside the consumer.
         let task_id = task.id;
         let task_url = task.url.clone();
         let queue_for_progress = queue.clone();
         let start_time = std::time::Instant::now();
-        // Store last update time as milliseconds since start (atomic for lock-free check)
-        let last_update_ms = Arc::new(AtomicU64::new(0));
         let script_sender_for_progress = script_sender.clone();
         let effective_script_files_for_progress = effective_script_files.clone();
 
-        let progress_callback = move |downloaded: u64, total: Option<u64>| {
-            // Lock-free throttle check: update at most once per 500ms
-            let elapsed_ms = start_time.elapsed().as_millis() as u64;
-            let last_ms = last_update_ms.load(Ordering::Relaxed);
-            if elapsed_ms.saturating_sub(last_ms) < 500 {
-                return; // Throttled - skip this update entirely (no task spawn)
-            }
-            
-            // Try to atomically update last_update_ms (compare-and-swap)
-            // If another thread updated it first, skip this update
-            if last_update_ms.compare_exchange(
-                last_ms,
-                elapsed_ms,
-                Ordering::SeqCst,
-                Ordering::Relaxed
-            ).is_err() {
-                return; // Another update won the race
-            }
+        let (prog_tx, mut prog_rx) = tokio::sync::mpsc::channel::<(u64, Option<u64>)>(4);
 
-            // Only clone and spawn when we pass the throttle
-            let queue = queue_for_progress.clone();
-            let script_sender = script_sender_for_progress.clone();
-            let url = task_url.clone();
-            let effective_script_files = effective_script_files_for_progress.clone();
+        let progress_consumer = tokio::spawn(async move {
+            let mut last_script_ms: u64 = 0;
+            while let Some((downloaded, total)) = prog_rx.recv().await {
+                let Some(mut task) = queue_for_progress.get_by_id(task_id).await else {
+                    continue;
+                };
+                task.downloaded = downloaded;
+                task.size = total.or(task.size);
 
-            tokio::spawn(async move {
-                if let Some(mut task) = queue.get_by_id(task_id).await {
-                    task.downloaded = downloaded;
-                    task.size = total.or(task.size);
-
-                    // Hook Point 5: progress - Progress updates (fire-and-forget)
-                    if let Some(ref sender) = script_sender {
+                // Hook Point 5: progress - fire-and-forget, throttled to ~2/sec
+                if let Some(ref sender) = script_sender_for_progress {
+                    let elapsed_ms = start_time.elapsed().as_millis() as u64;
+                    if elapsed_ms.saturating_sub(last_script_ms) >= 500 {
+                        last_script_ms = elapsed_ms;
                         let elapsed = start_time.elapsed().as_secs_f64();
-                        let speed_value = if elapsed > 0.0 {
-                            downloaded as f64 / elapsed
-                        } else {
-                            0.0
-                        };
-
+                        let speed_value = if elapsed > 0.0 { downloaded as f64 / elapsed } else { 0.0 };
                         let ctx = crate::script::events::ProgressContext {
-                            url: url.clone(),
+                            url: task_url.clone(),
                             filename: task.filename.clone(),
                             downloaded,
                             total,
                             speed: Some(speed_value),
                             percentage: None, // Calculated by script engine
                         };
-
-                        // Fire-and-forget (no need to wait for response)
                         let sender_clone = (*sender).clone();
-                        let effective_files = effective_script_files.clone();
+                        let effective_files = effective_script_files_for_progress.clone();
                         tokio::task::spawn_blocking(move || {
                             if let Err(e) = sender_clone.send(ScriptRequest::Progress {
                                 ctx,
@@ -824,10 +802,15 @@ impl DownloadManager {
                             }
                         });
                     }
-
-                    queue.update(task).await;
                 }
-            });
+
+                queue_for_progress.update(task).await;
+            }
+        });
+
+        let progress_callback = move |downloaded: u64, total: Option<u64>| {
+            // Non-blocking: drop if the consumer is behind; the next update wins.
+            let _ = prog_tx.try_send((downloaded, total));
         };
 
         // Rebuild headers to include any auth header from authRequired hook
@@ -847,6 +830,10 @@ impl DownloadManager {
                 Some(progress_callback),
             )
             .await?;
+
+        // The callback (and its sender) is now dropped; drain the remaining
+        // progress updates so the final value is applied before finalizing.
+        let _ = progress_consumer.await;
 
         // Apply last modified time if available
         if let Some(ref last_modified) = download_info.last_modified {
