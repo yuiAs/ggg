@@ -1229,7 +1229,7 @@ impl TuiApp {
                     }
                 } else {
                     // Navigate fields
-                    let field_count = 9; // save_path, auto_date, auto_start, prevent_duplicate_url, scripts, max_concurrent, user_agent, referrer_policy, headers
+                    let field_count = super::state::SettingsField::all().len();
                     self.state.move_field_selection_down(field_count);
                 }
             }
@@ -1416,17 +1416,9 @@ impl TuiApp {
         }
 
         // Determine which field is selected
-        let selected_field = match self.state.settings_field_index {
-            0 => SettingsField::FolderSavePath,
-            1 => SettingsField::FolderAutoDate,
-            2 => SettingsField::FolderAutoStart,
-            3 => SettingsField::FolderPreventDuplicateUrl,
-            4 => SettingsField::FolderScripts,
-            5 => SettingsField::FolderMaxConcurrent,
-            6 => SettingsField::FolderUserAgent,
-            7 => SettingsField::FolderReferrerPolicy,
-            8 => SettingsField::FolderHeaders,
-            _ => return Ok(()),
+        let selected_field = match SettingsField::from_index(self.state.settings_field_index) {
+            Some(field) => field,
+            None => return Ok(()),
         };
 
         self.state.settings_edit_field = Some(selected_field);

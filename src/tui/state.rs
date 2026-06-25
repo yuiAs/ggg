@@ -176,6 +176,27 @@ pub enum SettingsField {
 }
 
 impl SettingsField {
+    /// All folder settings fields, in display order. The order must match the
+    /// index mapping used by the folder settings handlers.
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::FolderSavePath,
+            Self::FolderAutoDate,
+            Self::FolderAutoStart,
+            Self::FolderPreventDuplicateUrl,
+            Self::FolderScripts,
+            Self::FolderMaxConcurrent,
+            Self::FolderUserAgent,
+            Self::FolderReferrerPolicy,
+            Self::FolderHeaders,
+        ]
+    }
+
+    /// Map a 0-based display index to its field.
+    pub fn from_index(index: usize) -> Option<Self> {
+        Self::all().into_iter().nth(index)
+    }
+
     /// Get translation key for label
     pub fn label_key(&self) -> &str {
         match self {
