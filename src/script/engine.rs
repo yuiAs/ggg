@@ -135,7 +135,13 @@ impl ScriptEngine {
                         timeout_ms: timeout.as_millis() as u64,
                     })
                 } else {
-                    Err(ScriptError::InternalError(e.to_string()))
+                    // A genuine JS/V8 exception (not a timeout) — preserve it as
+                    // a structured execution error rather than a flat internal
+                    // error, keeping the script name for diagnostics.
+                    Err(ScriptError::ExecutionError {
+                        script: name.to_string(),
+                        message: e.to_string(),
+                    })
                 }
             }
         }

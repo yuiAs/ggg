@@ -4,10 +4,6 @@ use thiserror::Error;
 /// Errors that can occur during script execution
 #[derive(Error, Debug)]
 pub enum ScriptError {
-    /// Script file not found
-    #[error("Script file not found: {0}")]
-    FileNotFound(PathBuf),
-
     /// Failed to read script file
     #[error("Failed to read script file {path}: {source}")]
     FileReadError {
@@ -31,10 +27,6 @@ pub enum ScriptError {
     #[error("Invalid event name: {0}")]
     InvalidEventName(String),
 
-    /// Invalid callback
-    #[error("Invalid callback function in {script}: {message}")]
-    InvalidCallback { script: String, message: String },
-
     /// Invalid filter pattern
     #[error("Invalid URL filter pattern in {script}: {pattern}")]
     InvalidFilter { script: String, pattern: String },
@@ -50,14 +42,6 @@ pub enum ScriptError {
     /// Invalid script directory
     #[error("Invalid script directory: {0}")]
     InvalidScriptDirectory(PathBuf),
-
-    /// Handler registration error
-    #[error("Failed to register handler in {script}: {message}")]
-    HandlerRegistrationError { script: String, message: String },
-
-    /// Context error - event context invalid or missing required fields
-    #[error("Invalid event context for {event}: {message}")]
-    InvalidContext { event: String, message: String },
 
     /// Internal error - unexpected state
     #[error("Internal script error: {0}")]
@@ -92,38 +76,11 @@ impl ScriptError {
         }
     }
 
-    /// Create an invalid callback error
-    pub fn invalid_callback(script: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::InvalidCallback {
-            script: script.into(),
-            message: message.into(),
-        }
-    }
-
     /// Create an invalid filter error
     pub fn invalid_filter(script: impl Into<String>, pattern: impl Into<String>) -> Self {
         Self::InvalidFilter {
             script: script.into(),
             pattern: pattern.into(),
-        }
-    }
-
-    /// Create a handler registration error
-    pub fn handler_registration(
-        script: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
-        Self::HandlerRegistrationError {
-            script: script.into(),
-            message: message.into(),
-        }
-    }
-
-    /// Create an invalid context error
-    pub fn invalid_context(event: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::InvalidContext {
-            event: event.into(),
-            message: message.into(),
         }
     }
 }
@@ -135,8 +92,8 @@ mod tests {
 
     #[test]
     fn test_error_display() {
-        let err = ScriptError::FileNotFound(PathBuf::from("test.js"));
-        assert_eq!(err.to_string(), "Script file not found: test.js");
+        let err = ScriptError::InvalidEventName("bogus".to_string());
+        assert_eq!(err.to_string(), "Invalid event name: bogus");
 
         let err = ScriptError::compilation(PathBuf::from("test.js"), "syntax error");
         assert_eq!(
