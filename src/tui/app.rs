@@ -62,9 +62,15 @@ impl TuiApp {
             }
             TuiEvent::Input(input) => {
                 self.handle_input(input).await?;
-                // Force update after user input for immediate feedback
-                self.state.update_downloads(&self.manager).await;
-                self.last_update_time = std::time::Instant::now();
+                // Refresh from the manager for immediate feedback, but no more
+                // often than a short debounce so a burst of navigation
+                // keystrokes doesn't hit the manager (and config lock) on every
+                // press. A deliberate single keypress still refreshes at once.
+                let now = std::time::Instant::now();
+                if now.duration_since(self.last_update_time) >= Duration::from_millis(50) {
+                    self.state.update_downloads(&self.manager).await;
+                    self.last_update_time = now;
+                }
                 self.state.mark_dirty();  // Mark for redraw after input handling
             }
             #[cfg(windows)]
