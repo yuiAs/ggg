@@ -1513,17 +1513,10 @@ async fn handle_move(
 ) -> Result<i32> {
     let id = parse_task_id(&id_str)?;
 
-    // Check that only one operation is specified
-    let ops_count = [to_top, to_bottom, before.is_some(), folder.is_some()]
-        .iter()
-        .filter(|&&x| x)
-        .count();
-
-    if ops_count == 0 {
+    // Mutual exclusivity is enforced by the clap `move_op` group; here we only
+    // need to require that at least one operation was given.
+    if !to_top && !to_bottom && before.is_none() && folder.is_none() {
         return Err(anyhow::anyhow!("Must specify one of: --to-top, --to-bottom, --before, --folder"));
-    }
-    if ops_count > 1 {
-        return Err(anyhow::anyhow!("Can only specify one operation at a time"));
     }
 
     if to_top {
