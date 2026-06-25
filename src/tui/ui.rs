@@ -1,4 +1,7 @@
 use super::app::TuiApp;
+use super::format::{
+    format_progress_bar, format_progress_with_bar, format_size, format_speed, truncate_filename,
+};
 use super::state::{DetailsPosition, FocusPane, FolderTreeItem, UiMode};
 use super::theme;
 use crate::download::task::{DownloadStatus, LogLevel};
@@ -11,7 +14,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, Tabs, Wrap},
     Frame,
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 /// Main rendering function
 pub fn render(app: &TuiApp, f: &mut Frame) {
@@ -1209,13 +1212,12 @@ fn render_folder_list(app: &TuiApp, f: &mut Frame, area: Rect) {
     let muted_color = theme::TEXT_MUTED;
 
     let mut folder_items = Vec::new();
-    let mut folder_count = 0;
+
+    // Render from the per-tick folder snapshot (no config lock at render).
+    let folder_entries = &app.state.cached_folder_entries;
+    let folder_count = folder_entries.len();
 
     {
-        // Render from the per-tick folder snapshot (no config lock at render).
-        let folder_entries = &app.state.cached_folder_entries;
-        folder_count = folder_entries.len();
-
         for (idx, (_folder_id, display_name)) in folder_entries.iter().enumerate() {
             let is_selected = idx == app.state.settings_folder_index;
             let style = if is_selected {
@@ -2116,139 +2118,6 @@ fn status_color(status: &DownloadStatus) -> Color {
         DownloadStatus::Completed => theme::DL_COMPLETED,
         DownloadStatus::Error => theme::DL_ERROR,
         DownloadStatus::Deleted => theme::DL_DELETED,
-    }
-}
-
-/// Format bytes to human-readable size
-fn format_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    let mut unit_idx = 0;
-
-    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_idx += 1;
-    }
-
-    if unit_idx == 0 {
-        format!("{} {}", bytes, UNITS[unit_idx])
-    } else {
-        format!("{:.2} {}", size, UNITS[unit_idx])
-    }
-}
-
-/// Format speed (bytes per second) to human-readable format
-fn format_speed(bytes_per_sec: f64) -> String {
-    const UNITS: &[&str] = &["B/s", "KB/s", "MB/s", "GB/s"];
-    let mut speed = bytes_per_sec;
-    let mut unit_idx = 0;
-
-    while speed >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        speed /= 1024.0;
-        unit_idx += 1;
-    }
-
-    if unit_idx == 0 {
-        format!("{:.0} {}", speed, UNITS[unit_idx])
-    } else {
-        format!("{:.1} {}", speed, UNITS[unit_idx])
-    }
-}
-
-/// Truncate filename with ellipsis if too long, preserving extension
-/// Uses unicode-width for accurate display width (handles Japanese/CJK correctly)
-fn truncate_filename(filename: &str, max_width: usize) -> String {
-    // Use display width (accounts for East Asian characters = 2 cells)
-    let display_width = filename.width();
-
-    if display_width <= max_width {
-        return filename.to_string();
-    }
-
-    // Try to preserve extension
-    if let Some(dot_pos) = filename.rfind('.') {
-        let (name, ext) = filename.split_at(dot_pos);
-        let ext_width = ext.width();
-
-        // If extension is reasonable (< 10 width), keep it
-        if ext_width < 10 && ext_width + 3 < max_width {
-            // Calculate how much width we can use for the name part
-            let target_name_width = max_width.saturating_sub(ext_width + 3); // 3 for "..."
-
-            if target_name_width > 0 {
-                // Truncate name by width, not character count
-                let mut truncated_name = String::new();
-                let mut current_width = 0;
-
-                for ch in name.chars() {
-                    let ch_width = ch.width().unwrap_or(1);
-                    if current_width + ch_width > target_name_width {
-                        break;
-                    }
-                    truncated_name.push(ch);
-                    current_width += ch_width;
-                }
-
-                return format!("{}...{}", truncated_name, ext);
-            }
-        }
-    }
-
-    // Fallback: simple truncation with ellipsis at end
-    let target_width = max_width.saturating_sub(3);
-    let mut truncated = String::new();
-    let mut current_width = 0;
-
-    for ch in filename.chars() {
-        let ch_width = ch.width().unwrap_or(1);
-        if current_width + ch_width > target_width {
-            break;
-        }
-        truncated.push(ch);
-        current_width += ch_width;
-    }
-
-    format!("{}...", truncated)
-}
-
-/// Create a visual progress bar using Unicode block characters
-/// Optimized to reduce allocations by using String::with_capacity
-fn format_progress_bar(downloaded: u64, total: Option<u64>, width: usize) -> String {
-    if let Some(total) = total {
-        if total == 0 {
-            return "░".repeat(width);
-        }
-
-        let progress = (downloaded as f64 / total as f64).min(1.0);
-        let filled = (progress * width as f64) as usize;
-        let remaining = width.saturating_sub(filled);
-
-        // Pre-allocate with exact capacity to avoid reallocations
-        let mut bar = String::with_capacity(width * 3); // 3 bytes per UTF-8 character
-        for _ in 0..filled {
-            bar.push('█');
-        }
-        for _ in 0..remaining {
-            bar.push('░');
-        }
-        bar
-    } else {
-        // Unknown total - show indeterminate progress
-        "▓".repeat(width)
-    }
-}
-
-/// Format progress percentage with visual indicator
-fn format_progress_with_bar(downloaded: u64, total: Option<u64>) -> String {
-    if let Some(total) = total {
-        if total == 0 {
-            return "N/A".to_string();
-        }
-        let percentage = (downloaded * 100 / total).min(100);
-        let bar = format_progress_bar(downloaded, Some(total), 10);
-        format!("{:>3}% {}", percentage, bar)
-    } else {
-        "N/A  ░░░░░░░░░░".to_string()
     }
 }
 
