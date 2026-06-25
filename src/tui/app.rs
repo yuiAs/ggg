@@ -1677,6 +1677,27 @@ impl TuiApp {
     }
 
     /// Handle change folder mode (folder picker for changing item's application folder)
+    /// Shared j/k (and arrow) navigation for the folder-picker dialogs.
+    fn navigate_folder_picker(&mut self, key: KeyCode, folder_count: usize) {
+        if folder_count == 0 {
+            return;
+        }
+        match key {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.state.folder_picker_index =
+                    (self.state.folder_picker_index + 1) % folder_count;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.state.folder_picker_index = if self.state.folder_picker_index == 0 {
+                    folder_count - 1
+                } else {
+                    self.state.folder_picker_index - 1
+                };
+            }
+            _ => {}
+        }
+    }
+
     async fn handle_change_folder_for_item_mode(&mut self, key: KeyCode) -> Result<()> {
         let config = self.state.app_state.config.read().await;
         let folder_entries = config.sorted_folder_entries();
@@ -1684,20 +1705,8 @@ impl TuiApp {
         drop(config);
 
         match key {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if folder_count > 0 {
-                    self.state.folder_picker_index =
-                        (self.state.folder_picker_index + 1) % folder_count;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if folder_count > 0 {
-                    self.state.folder_picker_index = if self.state.folder_picker_index == 0 {
-                        folder_count - 1
-                    } else {
-                        self.state.folder_picker_index - 1
-                    };
-                }
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('k') | KeyCode::Up => {
+                self.navigate_folder_picker(key, folder_count);
             }
             KeyCode::Enter => {
                 self.commit_change_folder_selection(&folder_entries).await?;
@@ -1795,19 +1804,8 @@ impl TuiApp {
         drop(config);
 
         match key {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if folder_count > 0 {
-                    self.state.folder_picker_index = (self.state.folder_picker_index + 1) % folder_count;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if folder_count > 0 {
-                    self.state.folder_picker_index = if self.state.folder_picker_index == 0 {
-                        folder_count - 1
-                    } else {
-                        self.state.folder_picker_index - 1
-                    };
-                }
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('k') | KeyCode::Up => {
+                self.navigate_folder_picker(key, folder_count);
             }
             KeyCode::Enter => {
                 // Select folder by UUID
