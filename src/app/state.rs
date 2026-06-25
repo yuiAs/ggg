@@ -24,7 +24,12 @@ impl AppState {
             LocalizationManager::new(language).unwrap_or_else(|e| {
                 tracing::error!("Failed to load translations for '{}': {}", language, e);
                 tracing::info!("Falling back to English");
-                LocalizationManager::new("en").expect("Failed to load fallback locale")
+                LocalizationManager::new("en").unwrap_or_else(|e2| {
+                    // Bundled English should always load; if it somehow can't,
+                    // start with a placeholder manager rather than panicking.
+                    tracing::error!("Failed to load fallback English locale: {}", e2);
+                    LocalizationManager::fallback()
+                })
             }),
         )
     }
