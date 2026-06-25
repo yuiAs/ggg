@@ -118,6 +118,11 @@ pub fn run(state: SharedState) -> Result<()> {
             DispatchMessageW(&msg);
         }
 
+        // Clear the window's state pointer before the StatePtrGuard frees the
+        // box, so any stray WM_PAINT delivered during teardown sees a null
+        // pointer (paint() guards on null) instead of a freed allocation.
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+
         // Best-effort: unregister the drop target. OLE teardown and the state
         // pointer are released by their RAII guards on scope exit.
         let _ = RevokeDragDrop(hwnd);
@@ -321,7 +326,19 @@ unsafe fn handle_paste(hwnd: HWND) {
 
 /// Read text from the clipboard (CF_UNICODETEXT).
 unsafe fn read_clipboard_text(hwnd: HWND) -> Option<String> {
-    if !OpenClipboard(Some(hwnd)).is_ok() {
+    // OpenClipboard fails transiently when another process holds the clipboard,
+    // which is common right after a copy. Retry a few times before giving up.
+    let mut opened = false;
+    for attempt in 0..5 {
+        if OpenClipboard(Some(hwnd)).is_ok() {
+            opened = true;
+            break;
+        }
+        if attempt < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    if !opened {
         return None;
     }
 
