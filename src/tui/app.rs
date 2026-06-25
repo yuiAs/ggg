@@ -26,6 +26,23 @@ use tokio::sync::mpsc;
 /// URLs can be up to 2048 chars (common browser limit)
 const MAX_INPUT_LENGTH: usize = 2048;
 
+/// Scan a scripts directory for `.js` filenames, sorted. Returns an empty list
+/// on any error. Used to populate `TuiState::cached_script_files`.
+fn scan_script_files(dir: &std::path::Path) -> Vec<String> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            let mut files: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
+                .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                .collect();
+            files.sort();
+            files
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Main TUI application
 pub struct TuiApp {
     pub state: TuiState,
@@ -56,6 +73,12 @@ impl TuiApp {
                 let now = std::time::Instant::now();
                 if now.duration_since(self.last_update_time) >= Duration::from_millis(250) {
                     self.state.update_downloads(&self.manager).await;
+                    // Refresh the script-file cache only while settings is open,
+                    // so render/input paths can read it instead of scanning the
+                    // directory on every frame.
+                    if matches!(self.state.ui_mode, UiMode::Settings) {
+                        self.refresh_script_files_cache().await;
+                    }
                     self.last_update_time = now;
                     self.state.mark_dirty();  // Mark for redraw after data update
                 }
@@ -84,6 +107,15 @@ impl TuiApp {
             }
         }
         Ok(())
+    }
+
+    /// Refresh the cached list of script files from the configured directory.
+    async fn refresh_script_files_cache(&mut self) {
+        let dir = {
+            let config = self.state.app_state.config.read().await;
+            config.scripts.directory.clone()
+        };
+        self.state.cached_script_files = scan_script_files(&dir);
     }
 
     /// Handle keyboard input
@@ -747,6 +779,9 @@ impl TuiApp {
                 }
                 KeyAction::OpenSettings => {
                     self.state.ui_mode = UiMode::Settings;
+                    // Populate the cache immediately so the first frame doesn't
+                    // need to scan the scripts directory.
+                    self.refresh_script_files_cache().await;
                     return Ok(());
                 }
                 KeyAction::SwitchFolder => {
@@ -997,18 +1032,8 @@ impl TuiApp {
                     // Navigation and actions depend on whether scripts section is expanded
                     KeyCode::Char('j') | KeyCode::Down => {
                         if self.state.app_scripts_expanded {
-                            // Navigate script files
-                            let config = self.state.app_state.config.read().await;
-                            let script_dir = config.scripts.directory.clone();
-                            drop(config);
-
-                            let script_count = match std::fs::read_dir(&script_dir) {
-                                Ok(entries) => entries
-                                    .filter_map(|e| e.ok())
-                                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                                    .count(),
-                                Err(_) => 0,
-                            };
+                            // Navigate script files (cached; refreshed on tick)
+                            let script_count = self.state.cached_script_files.len();
 
                             if script_count > 0 {
                                 self.state.script_files_index =
@@ -1025,18 +1050,8 @@ impl TuiApp {
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
                         if self.state.app_scripts_expanded {
-                            // Navigate script files
-                            let config = self.state.app_state.config.read().await;
-                            let script_dir = config.scripts.directory.clone();
-                            drop(config);
-
-                            let script_count = match std::fs::read_dir(&script_dir) {
-                                Ok(entries) => entries
-                                    .filter_map(|e| e.ok())
-                                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                                    .count(),
-                                Err(_) => 0,
-                            };
+                            // Navigate script files (cached; refreshed on tick)
+                            let script_count = self.state.cached_script_files.len();
 
                             if script_count > 0 {
                                 self.state.script_files_index = if self.state.script_files_index == 0 {
@@ -1061,23 +1076,8 @@ impl TuiApp {
                     // Enter or Space
                     KeyCode::Enter | KeyCode::Char(' ') => {
                         if self.state.app_scripts_expanded {
-                            // Toggle script file
-                            let config = self.state.app_state.config.read().await;
-                            let script_dir = config.scripts.directory.clone();
-                            drop(config);
-
-                            let script_files = match std::fs::read_dir(&script_dir) {
-                                Ok(entries) => {
-                                    let mut files: Vec<String> = entries
-                                        .filter_map(|e| e.ok())
-                                        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                                        .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
-                                        .collect();
-                                    files.sort();
-                                    files
-                                }
-                                Err(_) => Vec::new(),
-                            };
+                            // Toggle script file (cached; refreshed on tick)
+                            let script_files = self.state.cached_script_files.clone();
 
                             if self.state.script_files_index < script_files.len() {
                                 let filename = script_files[self.state.script_files_index].clone();
@@ -1209,18 +1209,8 @@ impl TuiApp {
             // Navigation depends on whether scripts section is expanded
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.state.folder_scripts_expanded {
-                    // Navigate script files
-                    let config = self.state.app_state.config.read().await;
-                    let script_dir = config.scripts.directory.clone();
-                    drop(config);
-
-                    let script_count = match std::fs::read_dir(&script_dir) {
-                        Ok(entries) => entries
-                            .filter_map(|e| e.ok())
-                            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                            .count(),
-                        Err(_) => 0,
-                    };
+                    // Navigate script files (cached; refreshed on tick)
+                    let script_count = self.state.cached_script_files.len();
 
                     if script_count > 0 {
                         self.state.script_files_index =
@@ -1234,18 +1224,8 @@ impl TuiApp {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.state.folder_scripts_expanded {
-                    // Navigate script files
-                    let config = self.state.app_state.config.read().await;
-                    let script_dir = config.scripts.directory.clone();
-                    drop(config);
-
-                    let script_count = match std::fs::read_dir(&script_dir) {
-                        Ok(entries) => entries
-                            .filter_map(|e| e.ok())
-                            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                            .count(),
-                        Err(_) => 0,
-                    };
+                    // Navigate script files (cached; refreshed on tick)
+                    let script_count = self.state.cached_script_files.len();
 
                     if script_count > 0 {
                         self.state.script_files_index = if self.state.script_files_index == 0 {
@@ -1263,24 +1243,9 @@ impl TuiApp {
             // Enter or Space
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if self.state.folder_scripts_expanded {
-                    // Toggle folder script file
+                    // Toggle folder script file (cached; refreshed on tick)
                     if let Some(ref folder_id) = self.state.selected_folder_id {
-                        let config = self.state.app_state.config.read().await;
-                        let script_dir = config.scripts.directory.clone();
-                        drop(config);
-
-                        let script_files = match std::fs::read_dir(&script_dir) {
-                            Ok(entries) => {
-                                let mut files: Vec<String> = entries
-                                    .filter_map(|e| e.ok())
-                                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                                    .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
-                                    .collect();
-                                files.sort();
-                                files
-                            }
-                            Err(_) => Vec::new(),
-                        };
+                        let script_files = self.state.cached_script_files.clone();
 
                         if self.state.script_files_index < script_files.len() {
                             let filename = script_files[self.state.script_files_index].clone();

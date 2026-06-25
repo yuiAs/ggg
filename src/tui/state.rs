@@ -466,6 +466,11 @@ pub struct TuiState {
     /// Folder context menu: selected menu item index
     pub folder_context_menu_index: usize,
 
+    /// Cached sorted list of `.js` script filenames, refreshed on tick while the
+    /// settings screen is open. Avoids a blocking `read_dir` on every frame and
+    /// every settings keypress.
+    pub cached_script_files: Vec<String>,
+
     /// Keyboard shortcut resolver
     pub keybinding_resolver: crate::app::keybindings::KeybindingResolver,
 
@@ -528,6 +533,7 @@ impl TuiState {
             table_state: RefCell::new(table_state),
             click_regions: RefCell::new(ClickableRegions::default()),
             folder_context_menu_index: 0,
+            cached_script_files: Vec::new(),
             keybinding_resolver,
             #[cfg(windows)]
             ipc_pipe_name: None,

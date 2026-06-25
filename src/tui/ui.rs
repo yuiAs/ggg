@@ -1109,23 +1109,11 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
         lines.push(Line::from(""));
         lines.push(Line::from(""));
 
-        let script_dir = config.scripts.directory.clone();
         let script_files_config = config.scripts.script_files.clone();
 
-        // List all script files
-        let script_files = match std::fs::read_dir(&script_dir) {
-            Ok(entries) => {
-                let mut files: Vec<String> = entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                    .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
-                    .collect();
-                files.sort();
-                files
-            }
-            Err(_) => Vec::new(),
-        };
-
+        // List all script files (cached; refreshed on tick by the app loop so
+        // rendering doesn't block on read_dir every frame).
+        let script_files = app.state.cached_script_files.clone();
         let script_count = script_files.len();
 
         // Collapsible header
@@ -1454,24 +1442,12 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
                 detail_lines.push(Line::from(""));
                 detail_lines.push(Line::from(""));
 
-                let script_dir = config.scripts.directory.clone();
                 let app_script_files = config.scripts.script_files.clone();
                 let folder_script_files = folder_config.script_files.as_ref();
 
-                // List all script files
-                let script_files = match std::fs::read_dir(&script_dir) {
-                    Ok(entries) => {
-                        let mut files: Vec<String> = entries
-                            .filter_map(|e| e.ok())
-                            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                            .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
-                            .collect();
-                        files.sort();
-                        files
-                    }
-                    Err(_) => Vec::new(),
-                };
-
+                // List all script files (cached; refreshed on tick by the app
+                // loop so rendering doesn't block on read_dir every frame).
+                let script_files = app.state.cached_script_files.clone();
                 let script_count = script_files.len();
 
                 // Collapsible header
