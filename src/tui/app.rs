@@ -1401,6 +1401,11 @@ impl TuiApp {
                         _ => {}
                     }
                 }
+                // Persist immediately so a confirmed folder-field edit isn't
+                // lost when the user quits without pressing the save key.
+                if let Err(e) = config.save() {
+                    tracing::error!("Failed to persist folder settings: {}", e);
+                }
             }
         }
 
