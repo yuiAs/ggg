@@ -1,7 +1,6 @@
 use crate::AppState;
 use crate::app::config::ReferrerPolicy;
 use crate::download::{manager::DownloadManager, task::DownloadTask};
-use fluent::fluent_args;
 use serde::{Deserialize, Serialize};
 
 /// Commands that can be invoked from the TUI
@@ -44,12 +43,84 @@ pub enum Command {
     ReloadConfig,
 }
 
+/// UI-agnostic error returned by [`handle_command`].
+///
+/// Variants carry machine-readable data rather than pre-translated strings, so
+/// the command layer stays free of any i18n / presentation dependency. The
+/// display layer is responsible for turning a `CommandError` into a localized,
+/// user-facing message (the TUI does this in `tui::localize_command_error`).
+/// The [`std::fmt::Display`] impl provides a plain-English fallback suitable for
+/// logging or for consumers without a translation catalog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CommandError {
+    /// The supplied download id was not a valid UUID.
+    InvalidUuid,
+    /// The supplied configuration payload could not be deserialized.
+    InvalidConfig,
+    /// A scripting operation was requested while scripting is disabled.
+    ScriptsDisabled,
+    /// A config reload was requested while downloads are still active.
+    ReloadActiveDownloads,
+    StartDownload { error: String },
+    PauseDownload { error: String },
+    ChangeFolder { error: String },
+    ValidationFailed { error: String },
+    SaveConfig { error: String },
+    FolderNotFound { folder: String },
+    ReloadScripts { error: String },
+    ScriptCommunication { error: String },
+    BlockingTask { error: String },
+    ReloadConfig { error: String },
+    /// Internal serialization failure (developer-facing, not localized).
+    Serialization { error: String },
+}
+
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommandError::InvalidUuid => write!(f, "Invalid download ID"),
+            CommandError::InvalidConfig => write!(f, "Invalid configuration"),
+            CommandError::ScriptsDisabled => write!(f, "Scripting is disabled"),
+            CommandError::ReloadActiveDownloads => {
+                write!(f, "Cannot reload configuration while downloads are active")
+            }
+            CommandError::StartDownload { error } => write!(f, "Failed to start download: {error}"),
+            CommandError::PauseDownload { error } => write!(f, "Failed to pause download: {error}"),
+            CommandError::ChangeFolder { error } => write!(f, "Failed to change folder: {error}"),
+            CommandError::ValidationFailed { error } => write!(f, "Validation failed: {error}"),
+            CommandError::SaveConfig { error } => write!(f, "Failed to save configuration: {error}"),
+            CommandError::FolderNotFound { folder } => write!(f, "Folder not found: {folder}"),
+            CommandError::ReloadScripts { error } => write!(f, "Failed to reload scripts: {error}"),
+            CommandError::ScriptCommunication { error } => {
+                write!(f, "Script communication error: {error}")
+            }
+            CommandError::BlockingTask { error } => write!(f, "Background task error: {error}"),
+            CommandError::ReloadConfig { error } => {
+                write!(f, "Failed to reload configuration: {error}")
+            }
+            CommandError::Serialization { error } => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for CommandError {}
+
 /// Response to a command
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CommandResponse {
     Success { data: serde_json::Value },
-    Error { error: String },
+    Error(CommandError),
+}
+
+impl CommandResponse {
+    /// Convenience constructor for the common `{"status": "ok"}` success.
+    fn ok() -> Self {
+        CommandResponse::Success {
+            data: serde_json::json!({"status": "ok"}),
+        }
+    }
 }
 
 pub async fn handle_command(
@@ -64,89 +135,68 @@ pub async fn handle_command(
                 let task = DownloadTask::new(url, config.download.default_directory.clone());
                 download_manager.add_download(task).await;
             }
-            CommandResponse::Success {
-                data: serde_json::json!({"status": "ok"}),
-            }
+            CommandResponse::ok()
         }
         Command::StartDownload { id } => {
             if let Ok(uuid) = uuid::Uuid::parse_str(&id) {
                 match download_manager.start_download(uuid, state.script_sender.clone(), state.config.clone()).await {
-                    Ok(_) => CommandResponse::Success {
-                        data: serde_json::json!({"status": "ok"}),
-                    },
-                    Err(e) => CommandResponse::Error {
-                        error: state.t_with_args("cmd-error-start-download",
-                            Some(&fluent_args!["error" => e.to_string()])),
-                    },
+                    Ok(_) => CommandResponse::ok(),
+                    Err(e) => CommandResponse::Error(CommandError::StartDownload {
+                        error: e.to_string(),
+                    }),
                 }
             } else {
-                CommandResponse::Error {
-                    error: state.t("cmd-error-invalid-uuid"),
-                }
+                CommandResponse::Error(CommandError::InvalidUuid)
             }
         }
         Command::PauseDownload { id } => {
             if let Ok(uuid) = uuid::Uuid::parse_str(&id) {
                 match download_manager.pause_download(uuid).await {
-                    Ok(_) => CommandResponse::Success {
-                        data: serde_json::json!({"status": "ok"}),
-                    },
-                    Err(e) => CommandResponse::Error {
-                        error: state.t_with_args("cmd-error-pause-download",
-                            Some(&fluent_args!["error" => e.to_string()])),
-                    },
+                    Ok(_) => CommandResponse::ok(),
+                    Err(e) => CommandResponse::Error(CommandError::PauseDownload {
+                        error: e.to_string(),
+                    }),
                 }
             } else {
-                CommandResponse::Error {
-                    error: state.t("cmd-error-invalid-uuid"),
-                }
+                CommandResponse::Error(CommandError::InvalidUuid)
             }
         }
         Command::GetDownloads => {
             let downloads = download_manager.get_all_downloads().await;
             match serde_json::to_value(&downloads) {
                 Ok(data) => CommandResponse::Success { data },
-                Err(e) => CommandResponse::Error {
+                Err(e) => CommandResponse::Error(CommandError::Serialization {
                     error: format!("Failed to serialize downloads: {}", e),
-                },
+                }),
             }
         }
         Command::RemoveDownload { id } => {
             if let Ok(uuid) = uuid::Uuid::parse_str(&id) {
                 download_manager.remove_download(uuid).await;
-                CommandResponse::Success {
-                    data: serde_json::json!({"status": "ok"}),
-                }
+                CommandResponse::ok()
             } else {
-                CommandResponse::Error {
-                    error: state.t("cmd-error-invalid-uuid"),
-                }
+                CommandResponse::Error(CommandError::InvalidUuid)
             }
         }
         Command::ChangeFolder { id, folder_id } => {
             if let Ok(uuid) = uuid::Uuid::parse_str(&id) {
                 match download_manager.change_folder(uuid, folder_id, Some(&state.config)).await {
-                    Ok(_) => CommandResponse::Success {
-                        data: serde_json::json!({"status": "ok"}),
-                    },
-                    Err(e) => CommandResponse::Error {
-                        error: state.t_with_args("cmd-error-change-folder",
-                            Some(&fluent_args!["error" => e.to_string()])),
-                    },
+                    Ok(_) => CommandResponse::ok(),
+                    Err(e) => CommandResponse::Error(CommandError::ChangeFolder {
+                        error: e.to_string(),
+                    }),
                 }
             } else {
-                CommandResponse::Error {
-                    error: state.t("cmd-error-invalid-uuid"),
-                }
+                CommandResponse::Error(CommandError::InvalidUuid)
             }
         }
         Command::GetConfig => {
             let config = state.config.read().await;
             match serde_json::to_value(&*config) {
                 Ok(data) => CommandResponse::Success { data },
-                Err(e) => CommandResponse::Error {
+                Err(e) => CommandResponse::Error(CommandError::Serialization {
                     error: format!("Failed to serialize config: {}", e),
-                },
+                }),
             }
         }
         Command::UpdateConfig { config } => {
@@ -155,28 +205,20 @@ pub async fn handle_command(
                 // Validate before applying
                 if let Err(errors) = crate::app::settings::validate_folder_config(&new_config) {
                     let error_str = errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ");
-                    return CommandResponse::Error {
-                        error: state.t_with_args("cmd-error-validation-failed",
-                            Some(&fluent_args!["error" => error_str])),
-                    };
+                    return CommandResponse::Error(CommandError::ValidationFailed { error: error_str });
                 }
 
                 *state_config = new_config;
                 // Save to disk
                 if let Err(e) = state_config.save() {
-                    return CommandResponse::Error {
-                        error: state.t_with_args("cmd-error-save-config",
-                            Some(&fluent_args!["error" => e.to_string()])),
-                    };
+                    return CommandResponse::Error(CommandError::SaveConfig {
+                        error: e.to_string(),
+                    });
                 }
 
-                CommandResponse::Success {
-                    data: serde_json::json!({"status": "ok"}),
-                }
+                CommandResponse::ok()
             } else {
-                CommandResponse::Error {
-                    error: state.t("cmd-error-invalid-config"),
-                }
+                CommandResponse::Error(CommandError::InvalidConfig)
             }
         }
 
@@ -187,18 +229,12 @@ pub async fn handle_command(
             // Validate constraints
             if let Err(errors) = crate::app::settings::validate_folder_config(&config) {
                 let error_str = errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ");
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-validation-failed",
-                        Some(&fluent_args!["error" => error_str])),
-                };
+                return CommandResponse::Error(CommandError::ValidationFailed { error: error_str });
             }
 
             // Save to disk
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -213,18 +249,12 @@ pub async fn handle_command(
             // Validate constraints
             if let Err(errors) = crate::app::settings::validate_folder_config(&config) {
                 let error_str = errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ");
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-validation-failed",
-                        Some(&fluent_args!["error" => error_str])),
-                };
+                return CommandResponse::Error(CommandError::ValidationFailed { error: error_str });
             }
 
             // Save to disk
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -239,18 +269,12 @@ pub async fn handle_command(
             // Validate constraints
             if let Err(errors) = crate::app::settings::validate_folder_config(&config) {
                 let error_str = errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ");
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-validation-failed",
-                        Some(&fluent_args!["error" => error_str])),
-                };
+                return CommandResponse::Error(CommandError::ValidationFailed { error: error_str });
             }
 
             // Save to disk
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -264,10 +288,7 @@ pub async fn handle_command(
 
             // Save to disk
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -281,10 +302,7 @@ pub async fn handle_command(
 
             // Save to disk
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -298,10 +316,7 @@ pub async fn handle_command(
 
             // Save to disk
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -314,10 +329,7 @@ pub async fn handle_command(
 
             // Save to disk
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -330,10 +342,7 @@ pub async fn handle_command(
 
             // Save to disk
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -346,10 +355,7 @@ pub async fn handle_command(
 
             // Save to disk
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -362,10 +368,7 @@ pub async fn handle_command(
             config.download.user_agent = value.clone();
 
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -378,15 +381,10 @@ pub async fn handle_command(
             config.download.referrer_policy = policy.clone();
 
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
-            CommandResponse::Success {
-                data: serde_json::json!({"status": "ok"}),
-            }
+            CommandResponse::ok()
         }
 
         Command::UpdateFolderMaxConcurrent { folder_id, value } => {
@@ -403,18 +401,12 @@ pub async fn handle_command(
             // Validate constraints
             if let Err(errors) = crate::app::settings::validate_folder_config(&config) {
                 let error_str = errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ");
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-validation-failed",
-                        Some(&fluent_args!["error" => error_str])),
-                };
+                return CommandResponse::Error(CommandError::ValidationFailed { error: error_str });
             }
 
             // Save to disk
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -433,10 +425,7 @@ pub async fn handle_command(
             folder_config.user_agent = value.clone();
 
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -455,10 +444,7 @@ pub async fn handle_command(
             folder_config.referrer_policy = policy;
 
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -476,10 +462,7 @@ pub async fn handle_command(
 
             // Save to disk
             if let Err(e) = config.save() {
-                return CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-save-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                };
+                return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
             }
 
             CommandResponse::Success {
@@ -521,10 +504,7 @@ pub async fn handle_command(
 
                 // Save to disk
                 if let Err(e) = config.save() {
-                    return CommandResponse::Error {
-                        error: state.t_with_args("cmd-error-save-config",
-                            Some(&fluent_args!["error" => e.to_string()])),
-                    };
+                    return CommandResponse::Error(CommandError::SaveConfig { error: e.to_string() });
                 }
 
                 CommandResponse::Success {
@@ -535,10 +515,7 @@ pub async fn handle_command(
                     }),
                 }
             } else {
-                CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-folder-not-found",
-                        Some(&fluent_args!["folder" => folder_id.clone()])),
-                }
+                CommandResponse::Error(CommandError::FolderNotFound { folder: folder_id })
             }
         }
 
@@ -560,29 +537,19 @@ pub async fn handle_command(
                         .map_err(|e| format!("{:?}", e))
                 }).await
                 {
-                    Ok(Ok(Ok(_))) => CommandResponse::Success {
-                        data: serde_json::json!({
-                            "status": "ok",
-                            "message": state.t("cmd-success-scripts-reloaded")
-                        }),
-                    },
-                    Ok(Ok(Err(e))) => CommandResponse::Error {
-                        error: state.t_with_args("cmd-error-reload-scripts",
-                            Some(&fluent_args!["error" => e.to_string()])),
-                    },
-                    Ok(Err(e)) => CommandResponse::Error {
-                        error: state.t_with_args("cmd-error-script-communication",
-                            Some(&fluent_args!["error" => e.clone()])),
-                    },
-                    Err(e) => CommandResponse::Error {
-                        error: state.t_with_args("cmd-error-blocking-task",
-                            Some(&fluent_args!["error" => e.to_string()])),
-                    },
+                    Ok(Ok(Ok(_))) => CommandResponse::ok(),
+                    Ok(Ok(Err(e))) => CommandResponse::Error(CommandError::ReloadScripts {
+                        error: e.to_string(),
+                    }),
+                    Ok(Err(e)) => CommandResponse::Error(CommandError::ScriptCommunication {
+                        error: e.clone(),
+                    }),
+                    Err(e) => CommandResponse::Error(CommandError::BlockingTask {
+                        error: e.to_string(),
+                    }),
                 }
             } else {
-                CommandResponse::Error {
-                    error: state.t("cmd-error-scripts-disabled"),
-                }
+                CommandResponse::Error(CommandError::ScriptsDisabled)
             }
         }
 
@@ -590,9 +557,7 @@ pub async fn handle_command(
             // Check if any downloads are active
             let has_active = download_manager.has_active_downloads().await;
             if has_active {
-                return CommandResponse::Error {
-                    error: state.t("cmd-error-reload-active-downloads"),
-                };
+                return CommandResponse::Error(CommandError::ReloadActiveDownloads);
             }
 
             // Reload configuration from disk
@@ -602,17 +567,11 @@ pub async fn handle_command(
                     let mut config = state.config.write().await;
                     *config = new_config;
 
-                    CommandResponse::Success {
-                        data: serde_json::json!({
-                            "status": "ok",
-                            "message": state.t("cmd-success-config-reloaded")
-                        }),
-                    }
+                    CommandResponse::ok()
                 }
-                Err(e) => CommandResponse::Error {
-                    error: state.t_with_args("cmd-error-reload-config",
-                        Some(&fluent_args!["error" => e.to_string()])),
-                },
+                Err(e) => CommandResponse::Error(CommandError::ReloadConfig {
+                    error: e.to_string(),
+                }),
             }
         }
     }

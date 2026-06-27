@@ -996,8 +996,8 @@ impl TuiApp {
                 crate::ui::commands::CommandResponse::Success { .. } => {
                     tracing::info!("Configuration reloaded successfully");
                 }
-                crate::ui::commands::CommandResponse::Error { error } => {
-                    tracing::error!("Failed to reload config: {}", error);
+                crate::ui::commands::CommandResponse::Error(err) => {
+                    tracing::error!("Failed to reload config: {}", err);
                 }
             }
             return Ok(());
@@ -2588,9 +2588,12 @@ impl TuiApp {
                     tracing::info!("Language changed. Please restart application for changes to take effect.");
                 }
             }
-            crate::ui::commands::CommandResponse::Error { error } => {
-                self.state.validation_error = Some(error.clone());
-                tracing::error!("Failed to update setting: {}", error);
+            crate::ui::commands::CommandResponse::Error(err) => {
+                // Map the machine-readable error to a localized message for display;
+                // log the plain-English Display form for diagnostics.
+                tracing::error!("Failed to update setting: {}", err);
+                self.state.validation_error =
+                    Some(crate::tui::localize_command_error(&self.state.app_state, &err));
             }
         }
 
