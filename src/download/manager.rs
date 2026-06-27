@@ -11,18 +11,43 @@ use crate::script::sender;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::sync::{mpsc, Arc};
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::{broadcast, RwLock, Semaphore};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-/// Progress update sent to UI
+/// Lifecycle events broadcast by the [`DownloadManager`].
+///
+/// Consumers (TUI, GUI, …) can `subscribe()` to react to state changes without
+/// polling `get_all_downloads()`. Polling still works and remains the source of
+/// truth; this stream is an optional, lossy notification layer. A lagging
+/// receiver observes `RecvError::Lagged` and should re-sync via a full poll.
 #[derive(Debug, Clone)]
-pub struct ProgressUpdate {
-    pub task_id: Uuid,
-    pub downloaded: u64,
-    pub total: Option<u64>,
-    pub speed: f64, // bytes per second
+pub enum DownloadEvent {
+    /// A task was enqueued.
+    Added { task_id: Uuid, folder_id: String },
+    /// A task entered the `Downloading` state (fresh start or resume).
+    Started { task_id: Uuid },
+    /// Progress tick. Coalesced and throttled — only the latest per task is meaningful.
+    Progress {
+        task_id: Uuid,
+        downloaded: u64,
+        total: Option<u64>,
+        speed: f64, // bytes per second
+    },
+    /// A task finished successfully.
+    Completed { task_id: Uuid },
+    /// A task failed after exhausting its retries.
+    Failed { task_id: Uuid, error: String },
+    /// A task was paused (manually or as the result of a stop request).
+    Paused { task_id: Uuid },
+    /// A task was removed from its queue.
+    Removed { task_id: Uuid },
 }
+
+/// Capacity of the lifecycle event broadcast buffer. Sized generously so a
+/// briefly-stalled subscriber doesn't immediately lag; progress events are the
+/// only high-frequency variant and are throttled at the source.
+const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Per-folder task counts for O(1) folder status checks
 /// Re-exported from folder_queue for backward compatibility
@@ -55,6 +80,8 @@ pub struct DownloadManager {
     // Circuit breaker for failing domains
     circuit_breaker: Arc<super::circuit_breaker::CircuitBreaker>,
 
+    // Optional push channel for lifecycle events (see `DownloadEvent`).
+    event_tx: broadcast::Sender<DownloadEvent>,
 }
 
 impl DownloadManager {
@@ -127,6 +154,7 @@ impl DownloadManager {
             retry_delay_secs,
             history: Arc::new(RwLock::new(DownloadHistory::new())),
             circuit_breaker: Arc::new(super::circuit_breaker::CircuitBreaker::new()),
+            event_tx: broadcast::channel(EVENT_CHANNEL_CAPACITY).0,
         }
     }
 
@@ -136,6 +164,23 @@ impl DownloadManager {
 
     pub fn with_retry_settings(max_retries: u32, retry_delay_secs: u64) -> Self {
         Self::with_config(3, 3, 1, max_retries, retry_delay_secs)
+    }
+
+    // ========== Event Stream ==========
+
+    /// Subscribe to the lifecycle event stream (see [`DownloadEvent`]).
+    ///
+    /// Each subscriber gets its own receiver. Events are best-effort: if a
+    /// receiver falls behind by more than the channel capacity it will observe
+    /// `RecvError::Lagged(n)` and should re-sync via `get_all_downloads()`.
+    pub fn subscribe(&self) -> broadcast::Receiver<DownloadEvent> {
+        self.event_tx.subscribe()
+    }
+
+    /// Broadcast a lifecycle event. Send errors (no active subscribers) are
+    /// expected and intentionally ignored — the event stream is optional.
+    fn emit(&self, event: DownloadEvent) {
+        let _ = self.event_tx.send(event);
     }
 
     // ========== Folder Queue Management ==========
@@ -169,9 +214,11 @@ impl DownloadManager {
     pub async fn add_download(&self, mut task: DownloadTask) {
         // Sanitize filename
         task.filename = sanitize_filename(&task.filename);
+        let task_id = task.id;
         let folder_id = task.folder_id.clone();
         let queue = self.get_or_create_folder_queue(&folder_id).await;
         queue.add(task).await;
+        self.emit(DownloadEvent::Added { task_id, folder_id });
     }
 
     /// Add a download, checking for duplicate URLs in the folder queue.
@@ -190,7 +237,9 @@ impl DownloadManager {
             return false;
         }
 
+        let task_id = task.id;
         queue.add(task).await;
+        self.emit(DownloadEvent::Added { task_id, folder_id });
         true
     }
 
@@ -239,6 +288,7 @@ impl DownloadManager {
             // queue.remove() already adjusted the per-folder count; release the
             // folder activation slot if the folder is now empty.
             self.deactivate_folder_if_empty(&task.folder_id).await;
+            self.emit(DownloadEvent::Removed { task_id: id });
         }
         removed
     }
@@ -390,7 +440,7 @@ impl DownloadManager {
             // Retry loop
             loop {
                 // Clone Arc-wrapped types (cheap) and task for retry attempt
-                match Self::download_task(current_task.clone(), http_client.clone(), queue.clone(), script_sender.clone(), config.clone(), is_resuming).await {
+                match Self::download_task(current_task.clone(), http_client.clone(), queue.clone(), script_sender.clone(), config.clone(), is_resuming, manager_for_cleanup.event_tx.clone()).await {
                     Ok(completed_task) => {
                         // Add completed task to history for display in CompletedNode
                         history.write().await.add(completed_task);
@@ -399,6 +449,7 @@ impl DownloadManager {
                         if let Some(domain) = super::circuit_breaker::extract_domain(&task_url) {
                             circuit_breaker.record_success(&domain);
                         }
+                        manager_for_cleanup.emit(DownloadEvent::Completed { task_id: id });
                         break;
                     }
                     Err(e) => {
@@ -436,6 +487,10 @@ impl DownloadManager {
                             current_task.status = DownloadStatus::Error;
                             current_task.log_error(format!("Max retries ({}) exceeded", max_retries));
                             queue.update(current_task.clone()).await;
+                            manager_for_cleanup.emit(DownloadEvent::Failed {
+                                task_id: id,
+                                error: current_task.error_message.clone().unwrap_or_default(),
+                            });
 
                             // Record failure for circuit breaker
                             if let Some(domain) = super::circuit_breaker::extract_domain(&task_url) {
@@ -481,6 +536,7 @@ impl DownloadManager {
         });
 
         self.active_downloads.write().await.insert(id, handle);
+        self.emit(DownloadEvent::Started { task_id: id });
 
         Ok(())
     }
@@ -522,6 +578,7 @@ impl DownloadManager {
         script_sender: Option<mpsc::Sender<ScriptRequest>>,
         config: Arc<tokio::sync::RwLock<crate::app::config::Config>>,
         is_resuming: bool,
+        event_tx: broadcast::Sender<DownloadEvent>,
     ) -> Result<DownloadTask> {
         // Compute effective script_files (Application + Folder override)
         let effective_script_files = Self::compute_effective_script_files(&config, &task.folder_id).await;
@@ -764,17 +821,35 @@ impl DownloadManager {
         let start_time = std::time::Instant::now();
         let script_sender_for_progress = script_sender.clone();
         let effective_script_files_for_progress = effective_script_files.clone();
+        let event_tx_for_progress = event_tx.clone();
 
         let (prog_tx, mut prog_rx) = tokio::sync::mpsc::channel::<(u64, Option<u64>)>(4);
 
         let progress_consumer = tokio::spawn(async move {
             let mut last_script_ms: u64 = 0;
+            let mut last_event_ms: u64 = 0;
             while let Some((downloaded, total)) = prog_rx.recv().await {
                 let Some(mut task) = queue_for_progress.get_by_id(task_id).await else {
                     continue;
                 };
                 task.downloaded = downloaded;
                 task.size = total.or(task.size);
+
+                // Push a throttled progress event for subscribers (e.g. a GUI).
+                // Independent from the script-hook throttle below so the two can
+                // evolve separately; ~200ms keeps a GUI smooth without flooding.
+                let now_ms = start_time.elapsed().as_millis() as u64;
+                if now_ms.saturating_sub(last_event_ms) >= 200 {
+                    last_event_ms = now_ms;
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    let speed = if elapsed > 0.0 { downloaded as f64 / elapsed } else { 0.0 };
+                    let _ = event_tx_for_progress.send(DownloadEvent::Progress {
+                        task_id,
+                        downloaded,
+                        total: task.size,
+                        speed,
+                    });
+                }
 
                 // Hook Point 5: progress - fire-and-forget, throttled to ~2/sec
                 if let Some(ref sender) = script_sender_for_progress {
@@ -992,6 +1067,7 @@ impl DownloadManager {
             }
             // Release the folder activation slot if nothing else is active.
             self.deactivate_folder_if_empty(&folder_id).await;
+            self.emit(DownloadEvent::Paused { task_id: id });
         }
 
         Ok(())
@@ -1561,7 +1637,37 @@ impl Default for DownloadManager {
 mod tests {
     use super::*;
     use crate::app::config::{Config, FolderConfig};
+    use crate::download::task::DownloadTask;
     use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn test_subscribe_receives_lifecycle_events() {
+        let manager = DownloadManager::new();
+        let mut rx = manager.subscribe();
+
+        let task = DownloadTask::new("https://example.com/file.bin".to_string(), "/tmp".into());
+        let id = task.id;
+        manager.add_download(task).await;
+
+        match rx.try_recv() {
+            Ok(DownloadEvent::Added { task_id, .. }) => assert_eq!(task_id, id),
+            other => panic!("expected Added event, got {other:?}"),
+        }
+
+        manager.remove_download(id).await;
+        match rx.try_recv() {
+            Ok(DownloadEvent::Removed { task_id }) => assert_eq!(task_id, id),
+            other => panic!("expected Removed event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_emit_without_subscribers_is_noop() {
+        // Emitting with no active receivers must not panic or error.
+        let manager = DownloadManager::new();
+        let task = DownloadTask::new("https://example.com/x".to_string(), "/tmp".into());
+        manager.add_download(task).await;
+    }
 
     #[tokio::test]
     async fn test_compute_effective_script_files_application_only() {
