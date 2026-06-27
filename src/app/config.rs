@@ -123,6 +123,19 @@ impl ReferrerPolicy {
     }
 }
 
+/// UI-only configuration consumed exclusively by the interactive front-end.
+///
+/// Grouped apart from the download/runtime settings so a non-TUI front-end (or
+/// the download core extracted as its own crate) can ignore it wholesale. It is
+/// `#[serde(flatten)]`-ed into the parent config, so on disk the keybindings
+/// still live under the top-level `[keybindings]` table — this is purely a
+/// code-level grouping with no change to the config file format.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UiConfig {
+    #[serde(default)]
+    pub keybindings: KeybindingsConfig,
+}
+
 /// Application-level configuration (saved to config/settings.toml)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplicationConfig {
@@ -130,8 +143,8 @@ pub struct ApplicationConfig {
     pub download: DownloadConfig,
     pub network: NetworkConfig,
     pub scripts: ScriptConfig,
-    #[serde(default)]
-    pub keybindings: KeybindingsConfig,
+    #[serde(flatten)]
+    pub ui: UiConfig,
 }
 
 /// Complete configuration (Application settings + Folder settings)
@@ -141,8 +154,8 @@ pub struct Config {
     pub download: DownloadConfig,
     pub network: NetworkConfig,
     pub scripts: ScriptConfig,
-    #[serde(default)]
-    pub keybindings: KeybindingsConfig,
+    #[serde(flatten)]
+    pub ui: UiConfig,
     #[serde(default)]
     pub folders: HashMap<String, FolderConfig>,
 }
@@ -301,7 +314,7 @@ impl Default for Config {
                 timeout: 30,
                 script_files: HashMap::new(),
             },
-            keybindings: KeybindingsConfig::default(),
+            ui: UiConfig::default(),
             folders: HashMap::new(),
         }
     }
@@ -395,7 +408,7 @@ impl Config {
             download: app_config.download,
             network: app_config.network,
             scripts: app_config.scripts,
-            keybindings: app_config.keybindings,
+            ui: app_config.ui,
             folders,
         };
 
@@ -541,7 +554,7 @@ impl Config {
                     timeout: 30,
                     script_files: HashMap::new(),
                 },
-                keybindings: KeybindingsConfig::default(),
+                ui: UiConfig::default(),
             })
         }
     }
@@ -561,7 +574,7 @@ impl Config {
             download: self.download.clone(),
             network: self.network.clone(),
             scripts: self.scripts.clone(),
-            keybindings: self.keybindings.clone(),
+            ui: self.ui.clone(),
         };
 
         let content = toml::to_string_pretty(&app_config)?;
@@ -986,7 +999,7 @@ timeout = 60
                 timeout: 30,
                 script_files: HashMap::new(),
             },
-            keybindings: KeybindingsConfig::default(),
+            ui: UiConfig::default(),
         };
 
         // Should serialize and deserialize correctly
@@ -996,6 +1009,38 @@ timeout = 60
         assert_eq!(deserialized.general.language, "en");
         assert_eq!(deserialized.download.max_concurrent, 5);
         assert_eq!(deserialized.download.max_redirects, 10);
+    }
+
+    #[test]
+    fn test_keybindings_flatten_preserves_toml_layout() {
+        use crate::app::keybindings::{KeyAction, KeyBindingSpec};
+
+        // Grouping keybindings under UiConfig must not change the on-disk
+        // layout: they stay flattened into the top-level [keybindings] table.
+        let mut cfg = Config::default();
+        cfg.ui
+            .keybindings
+            .bindings
+            .insert(KeyAction::MoveUp, KeyBindingSpec::Single("x".into()));
+
+        let app = ApplicationConfig {
+            general: cfg.general.clone(),
+            download: cfg.download.clone(),
+            network: cfg.network.clone(),
+            scripts: cfg.scripts.clone(),
+            ui: cfg.ui.clone(),
+        };
+
+        let serialized = toml::to_string_pretty(&app).unwrap();
+        assert!(serialized.contains("[keybindings]"), "keybindings table missing: {serialized}");
+        assert!(!serialized.contains("[ui"), "ui section must not leak to disk: {serialized}");
+
+        // An existing on-disk config (no [ui] wrapper) still deserializes.
+        let back: ApplicationConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            back.ui.keybindings.bindings.get(&KeyAction::MoveUp),
+            Some(&KeyBindingSpec::Single("x".into()))
+        );
     }
 
     #[test]

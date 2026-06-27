@@ -267,7 +267,7 @@ mod tests {
                 timeout: 30,
                 script_files: HashMap::new(),
             },
-            keybindings: crate::app::keybindings::KeybindingsConfig::default(),
+            ui: crate::app::config::UiConfig::default(),
             folders: HashMap::new(),
         }
     }

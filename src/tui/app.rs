@@ -2708,7 +2708,7 @@ pub async fn run_tui(
     // Read keybindings from config
     let keybindings = {
         let config = app_state.config.read().await;
-        config.keybindings.clone()
+        config.ui.keybindings.clone()
     };
 
     // Create app
