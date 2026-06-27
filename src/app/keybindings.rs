@@ -40,6 +40,7 @@ pub enum KeyAction {
 
     // View
     ToggleDetails,
+    CycleDetailsPosition,
     OpenSearch,
     OpenHelp,
     OpenSettings,
@@ -78,6 +79,7 @@ impl KeyAction {
             KeyAction::OpenContextMenu,
             KeyAction::EditItem,
             KeyAction::ToggleDetails,
+            KeyAction::CycleDetailsPosition,
             KeyAction::OpenSearch,
             KeyAction::OpenHelp,
             KeyAction::OpenSettings,
@@ -265,6 +267,7 @@ impl Default for KeybindingsConfig {
 
         // View
         bindings.insert(KeyAction::ToggleDetails, KeyBindingSpec::Single("i".into()));
+        bindings.insert(KeyAction::CycleDetailsPosition, KeyBindingSpec::Single("D".into()));
         bindings.insert(KeyAction::OpenSearch, KeyBindingSpec::Single("/".into()));
         bindings.insert(KeyAction::OpenHelp, KeyBindingSpec::Single("?".into()));
         bindings.insert(KeyAction::OpenSettings, KeyBindingSpec::Single("x".into()));
@@ -292,9 +295,15 @@ pub struct KeybindingResolver {
 impl KeybindingResolver {
     /// Create a new resolver from configuration
     pub fn from_config(config: &KeybindingsConfig) -> Self {
-        let mut action_map = HashMap::new();
+        let mut action_map: HashMap<KeyCombo, KeyAction> = HashMap::new();
 
-        for (action, spec) in &config.bindings {
+        // Iterate in a stable order (by action name) so that when two actions
+        // claim the same combo, the winner is deterministic across runs rather
+        // than dependent on HashMap iteration order.
+        let mut entries: Vec<(&KeyAction, &KeyBindingSpec)> = config.bindings.iter().collect();
+        entries.sort_by_key(|(action, _)| format!("{:?}", action));
+
+        for (action, spec) in entries {
             let keys = match spec {
                 KeyBindingSpec::Single(s) => vec![s.clone()],
                 KeyBindingSpec::Multiple(v) => v.clone(),
@@ -302,6 +311,15 @@ impl KeybindingResolver {
 
             for key_str in keys {
                 if let Some(combo) = KeyCombo::parse(&key_str) {
+                    if let Some(existing) = action_map.get(&combo) {
+                        if existing != action {
+                            tracing::warn!(
+                                "Keybinding conflict: '{}' is bound to both {:?} and {:?}; keeping {:?}",
+                                key_str, existing, action, existing
+                            );
+                        }
+                        continue; // first (stable) binding wins
+                    }
                     action_map.insert(combo, *action);
                 }
             }

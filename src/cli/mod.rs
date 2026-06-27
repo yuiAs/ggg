@@ -199,20 +199,23 @@ pub enum Commands {
         /// Download ID (UUID)
         id: String,
 
+        // The four move operations are mutually exclusive; the `move_op` group
+        // (ArgGroup, multiple = false by default) makes clap reject more than
+        // one at parse time.
         /// Move to top of queue
-        #[arg(long)]
+        #[arg(long, group = "move_op")]
         to_top: bool,
 
         /// Move to bottom of queue
-        #[arg(long)]
+        #[arg(long, group = "move_op")]
         to_bottom: bool,
 
         /// Move before another download
-        #[arg(long)]
+        #[arg(long, group = "move_op")]
         before: Option<String>,
 
         /// Move to different folder
-        #[arg(long)]
+        #[arg(long, group = "move_op")]
         folder: Option<String>,
     },
 

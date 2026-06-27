@@ -34,11 +34,30 @@ pub fn get_main_hwnd() -> isize {
     MAIN_HWND.load(Ordering::Relaxed)
 }
 
+/// RAII guard that uninitializes OLE on drop, so OLE is torn down on every exit
+/// path of `run`, including early returns from failed Win32 calls.
+struct OleGuard;
+impl Drop for OleGuard {
+    fn drop(&mut self) {
+        unsafe { OleUninitialize() };
+    }
+}
+
+/// RAII guard that reclaims the heap-allocated window state pointer on drop,
+/// preventing a leak when window creation fails before the message loop.
+struct StatePtrGuard(*mut SharedState);
+impl Drop for StatePtrGuard {
+    fn drop(&mut self) {
+        unsafe { drop(Box::from_raw(self.0)) };
+    }
+}
+
 /// Run the Win32 GUI. Blocks until the window is closed.
 pub fn run(state: SharedState) -> Result<()> {
     unsafe {
         // Initialize OLE (includes COM) — required for RegisterDragDrop
         OleInitialize(None)?;
+        let _ole_guard = OleGuard;
 
         let hinstance = GetModuleHandleW(None)?;
 
@@ -61,8 +80,10 @@ pub fn run(state: SharedState) -> Result<()> {
         let x = (screen_w - WINDOW_WIDTH) / 2;
         let y = (screen_h - WINDOW_HEIGHT) / 2;
 
-        // Store state pointer in window user data
+        // Store state pointer in window user data. The guard reclaims it on
+        // every exit path, including the `?` early returns below.
         let state_ptr = Box::into_raw(Box::new(state.clone()));
+        let _state_guard = StatePtrGuard(state_ptr);
 
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_ACCEPTFILES,
@@ -97,11 +118,14 @@ pub fn run(state: SharedState) -> Result<()> {
             DispatchMessageW(&msg);
         }
 
-        RevokeDragDrop(hwnd)?;
-        OleUninitialize();
+        // Clear the window's state pointer before the StatePtrGuard frees the
+        // box, so any stray WM_PAINT delivered during teardown sees a null
+        // pointer (paint() guards on null) instead of a freed allocation.
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
 
-        // Clean up the leaked state pointer
-        let _ = Box::from_raw(state_ptr);
+        // Best-effort: unregister the drop target. OLE teardown and the state
+        // pointer are released by their RAII guards on scope exit.
+        let _ = RevokeDragDrop(hwnd);
 
         Ok(())
     }
@@ -302,7 +326,19 @@ unsafe fn handle_paste(hwnd: HWND) {
 
 /// Read text from the clipboard (CF_UNICODETEXT).
 unsafe fn read_clipboard_text(hwnd: HWND) -> Option<String> {
-    if !OpenClipboard(Some(hwnd)).is_ok() {
+    // OpenClipboard fails transiently when another process holds the clipboard,
+    // which is common right after a copy. Retry a few times before giving up.
+    let mut opened = false;
+    for attempt in 0..5 {
+        if OpenClipboard(Some(hwnd)).is_ok() {
+            opened = true;
+            break;
+        }
+        if attempt < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    if !opened {
         return None;
     }
 
@@ -384,11 +420,14 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Truncate a string for display purposes, adding "..." if truncated.
+/// Truncate a string to `max_len` characters for display, adding "..." if
+/// truncated. Operates on `char` boundaries so multibyte UTF-8 (e.g. Unicode
+/// domains or paths) cannot panic the WM_PAINT handler via a byte-index slice.
 fn truncate_display(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", &s[..max_len])
+        let truncated: String = s.chars().take(max_len).collect();
+        format!("{}...", truncated)
     }
 }

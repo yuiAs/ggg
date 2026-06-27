@@ -1,4 +1,7 @@
 use super::app::TuiApp;
+use super::format::{
+    format_progress_bar, format_progress_with_bar, format_size, format_speed, truncate_filename,
+};
 use super::state::{DetailsPosition, FocusPane, FolderTreeItem, UiMode};
 use super::theme;
 use crate::download::task::{DownloadStatus, LogLevel};
@@ -11,7 +14,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, Tabs, Wrap},
     Frame,
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 /// Main rendering function
 pub fn render(app: &TuiApp, f: &mut Frame) {
@@ -1076,7 +1079,8 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
             .max_concurrent_per_folder
             .unwrap_or(max_concurrent);
         let active_folders = config.download.parallel_folder_count.unwrap_or(1);
-        let calculated = max_per_folder * active_folders;
+        // Saturating: these come from unbounded user-entered config values.
+        let calculated = max_per_folder.saturating_mul(active_folders);
         let constraint_met = calculated <= max_concurrent;
 
         let constraint_style = if constraint_met {
@@ -1108,23 +1112,11 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
         lines.push(Line::from(""));
         lines.push(Line::from(""));
 
-        let script_dir = config.scripts.directory.clone();
         let script_files_config = config.scripts.script_files.clone();
 
-        // List all script files
-        let script_files = match std::fs::read_dir(&script_dir) {
-            Ok(entries) => {
-                let mut files: Vec<String> = entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                    .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
-                    .collect();
-                files.sort();
-                files
-            }
-            Err(_) => Vec::new(),
-        };
-
+        // List all script files (cached; refreshed on tick by the app loop so
+        // rendering doesn't block on read_dir every frame).
+        let script_files = app.state.cached_script_files.clone();
         let script_count = script_files.len();
 
         // Collapsible header
@@ -1172,6 +1164,13 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
                 )));
             }
         }
+    } else {
+        // Config briefly locked (e.g. mid-edit): show a stable placeholder
+        // instead of a blank panel.
+        lines.push(Line::from(Span::styled(
+            "Loading configuration…",
+            Style::default().fg(muted_color),
+        )));
     }
 
     // Add help text
@@ -1204,8 +1203,6 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
 
 /// Render folder list (left panel)
 fn render_folder_list(app: &TuiApp, f: &mut Frame, area: Rect) {
-    let config = app.state.app_state.config.try_read();
-
     // Modern color palette
     let selected_color = theme::ACCENT_SELECTED;
     let border_color = theme::BORDER_INACTIVE;
@@ -1215,12 +1212,12 @@ fn render_folder_list(app: &TuiApp, f: &mut Frame, area: Rect) {
     let muted_color = theme::TEXT_MUTED;
 
     let mut folder_items = Vec::new();
-    let mut folder_count = 0;
 
-    if let Ok(config) = config {
-        let folder_entries = config.sorted_folder_entries();
-        folder_count = folder_entries.len();
+    // Render from the per-tick folder snapshot (no config lock at render).
+    let folder_entries = &app.state.cached_folder_entries;
+    let folder_count = folder_entries.len();
 
+    {
         for (idx, (_folder_id, display_name)) in folder_entries.iter().enumerate() {
             let is_selected = idx == app.state.settings_folder_index;
             let style = if is_selected {
@@ -1411,8 +1408,7 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
                 // Field 6: User Agent
                 let user_agent_str = folder_config
                     .user_agent
-                    .as_ref()
-                    .map(|s| s.clone())
+                    .clone()
                     .unwrap_or_else(|| app.state.t("settings-value-inherit"));
                 detail_lines.push(make_field_line(6, &app.state.t("settings-folder-user-agent"), user_agent_str));
 
@@ -1454,24 +1450,12 @@ fn render_folder_details(app: &TuiApp, f: &mut Frame, area: Rect) {
                 detail_lines.push(Line::from(""));
                 detail_lines.push(Line::from(""));
 
-                let script_dir = config.scripts.directory.clone();
                 let app_script_files = config.scripts.script_files.clone();
                 let folder_script_files = folder_config.script_files.as_ref();
 
-                // List all script files
-                let script_files = match std::fs::read_dir(&script_dir) {
-                    Ok(entries) => {
-                        let mut files: Vec<String> = entries
-                            .filter_map(|e| e.ok())
-                            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                            .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
-                            .collect();
-                        files.sort();
-                        files
-                    }
-                    Err(_) => Vec::new(),
-                };
-
+                // List all script files (cached; refreshed on tick by the app
+                // loop so rendering doesn't block on read_dir every frame).
+                let script_files = app.state.cached_script_files.clone();
                 let script_count = script_files.len();
 
                 // Collapsible header
@@ -1894,12 +1878,9 @@ fn render_download_preview_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
 /// Render change folder dialog (centered overlay)
 /// Render folder picker dialog for changing an item's application folder
 fn render_change_folder_for_item_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
-    let config = match app.state.app_state.config.try_read() {
-        Ok(cfg) => cfg,
-        Err(_) => return,
-    };
-    let folder_entries = config.sorted_folder_entries();
-    drop(config);
+    // Render from the per-tick snapshot so the dialog never vanishes on a
+    // transient config lock contention.
+    let folder_entries = app.state.cached_folder_entries.clone();
 
     let selected_index = app.state.folder_picker_index;
 
@@ -1912,7 +1893,7 @@ fn render_change_folder_for_item_dialog(app: &TuiApp, f: &mut Frame, area: Rect)
 
     let max_folder_width = folder_entries
         .iter()
-        .map(|(_id, name)| name.len())
+        .map(|(_id, name)| UnicodeWidthStr::width(name.as_str()))
         .max()
         .unwrap_or(20);
 
@@ -2140,161 +2121,18 @@ fn status_color(status: &DownloadStatus) -> Color {
     }
 }
 
-/// Format bytes to human-readable size
-fn format_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    let mut unit_idx = 0;
-
-    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_idx += 1;
-    }
-
-    if unit_idx == 0 {
-        format!("{} {}", bytes, UNITS[unit_idx])
-    } else {
-        format!("{:.2} {}", size, UNITS[unit_idx])
-    }
-}
-
-/// Format speed (bytes per second) to human-readable format
-fn format_speed(bytes_per_sec: f64) -> String {
-    const UNITS: &[&str] = &["B/s", "KB/s", "MB/s", "GB/s"];
-    let mut speed = bytes_per_sec;
-    let mut unit_idx = 0;
-
-    while speed >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        speed /= 1024.0;
-        unit_idx += 1;
-    }
-
-    if unit_idx == 0 {
-        format!("{:.0} {}", speed, UNITS[unit_idx])
-    } else {
-        format!("{:.1} {}", speed, UNITS[unit_idx])
-    }
-}
-
-/// Truncate filename with ellipsis if too long, preserving extension
-/// Uses unicode-width for accurate display width (handles Japanese/CJK correctly)
-fn truncate_filename(filename: &str, max_width: usize) -> String {
-    // Use display width (accounts for East Asian characters = 2 cells)
-    let display_width = filename.width();
-
-    if display_width <= max_width {
-        return filename.to_string();
-    }
-
-    // Try to preserve extension
-    if let Some(dot_pos) = filename.rfind('.') {
-        let (name, ext) = filename.split_at(dot_pos);
-        let ext_width = ext.width();
-
-        // If extension is reasonable (< 10 width), keep it
-        if ext_width < 10 && ext_width + 3 < max_width {
-            // Calculate how much width we can use for the name part
-            let target_name_width = max_width.saturating_sub(ext_width + 3); // 3 for "..."
-
-            if target_name_width > 0 {
-                // Truncate name by width, not character count
-                let mut truncated_name = String::new();
-                let mut current_width = 0;
-
-                for ch in name.chars() {
-                    let ch_width = ch.width().unwrap_or(1);
-                    if current_width + ch_width > target_name_width {
-                        break;
-                    }
-                    truncated_name.push(ch);
-                    current_width += ch_width;
-                }
-
-                return format!("{}...{}", truncated_name, ext);
-            }
-        }
-    }
-
-    // Fallback: simple truncation with ellipsis at end
-    let target_width = max_width.saturating_sub(3);
-    let mut truncated = String::new();
-    let mut current_width = 0;
-
-    for ch in filename.chars() {
-        let ch_width = ch.width().unwrap_or(1);
-        if current_width + ch_width > target_width {
-            break;
-        }
-        truncated.push(ch);
-        current_width += ch_width;
-    }
-
-    format!("{}...", truncated)
-}
-
-/// Create a visual progress bar using Unicode block characters
-/// Optimized to reduce allocations by using String::with_capacity
-fn format_progress_bar(downloaded: u64, total: Option<u64>, width: usize) -> String {
-    if let Some(total) = total {
-        if total == 0 {
-            return "░".repeat(width);
-        }
-
-        let progress = (downloaded as f64 / total as f64).min(1.0);
-        let filled = (progress * width as f64) as usize;
-        let remaining = width.saturating_sub(filled);
-
-        // Pre-allocate with exact capacity to avoid reallocations
-        let mut bar = String::with_capacity(width * 3); // 3 bytes per UTF-8 character
-        for _ in 0..filled {
-            bar.push('█');
-        }
-        for _ in 0..remaining {
-            bar.push('░');
-        }
-        bar
-    } else {
-        // Unknown total - show indeterminate progress
-        "▓".repeat(width)
-    }
-}
-
-/// Format progress percentage with visual indicator
-fn format_progress_with_bar(downloaded: u64, total: Option<u64>) -> String {
-    if let Some(total) = total {
-        if total == 0 {
-            return "N/A".to_string();
-        }
-        let percentage = (downloaded * 100 / total).min(100);
-        let bar = format_progress_bar(downloaded, Some(total), 10);
-        format!("{:>3}% {}", percentage, bar)
-    } else {
-        "N/A  ░░░░░░░░░░".to_string()
-    }
-}
-
 /// Render context menu (popup actions)
 fn render_switch_folder_dialog(app: &TuiApp, f: &mut Frame, area: Rect) {
-    // Get folder list from config
-    // Note: This is called from within the TUI render loop which is already async,
-    // but we can't make this function async. We use try_read() instead.
-    let config = match app.state.app_state.config.try_read() {
-        Ok(cfg) => cfg,
-        Err(_) => {
-            // If we can't acquire the lock, just show an empty list
-            // This shouldn't happen in practice since config updates are rare
-            return;
-        }
-    };
-    let folder_entries = config.sorted_folder_entries();
-    drop(config);
+    // Render from the per-tick folder snapshot rather than taking the config
+    // lock during render, so the dialog never vanishes on lock contention.
+    let folder_entries = app.state.cached_folder_entries.clone();
 
     let selected_index = app.state.folder_picker_index;
 
     // Calculate dialog dimensions
     let max_folder_width = folder_entries
         .iter()
-        .map(|(_id, name)| name.len())
+        .map(|(_id, name)| UnicodeWidthStr::width(name.as_str()))
         .max()
         .unwrap_or(20);
 

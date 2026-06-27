@@ -69,23 +69,55 @@ async fn handle_add(
     state: &AppState,
     manager: &DownloadManager,
 ) -> Result<i32> {
-    // Get default directory from config
-    let config = state.config.read().await;
-    let save_path = config.download.default_directory.clone();
+    // Get default directory from config, then release the lock before the loop.
+    let save_path = {
+        let config = state.config.read().await;
+        config.download.default_directory.clone()
+    };
 
-    let mut task = DownloadTask::new(url.clone(), save_path);
+    // Expand range patterns like `[1-10]` into individual URLs so the CLI
+    // matches the TUI's add behavior.
+    let urls = crate::util::url_expansion::expand_url(&url);
 
-    // Set folder if specified
-    if let Some(folder_id) = folder {
-        task.folder_id = folder_id;
+    let mut added = 0;
+    for u in urls {
+        // Reject empty / non-http(s)/ftp URLs up front instead of queueing
+        // garbage that only fails later.
+        if !is_valid_download_url(&u) {
+            eprintln!("Skipping invalid URL: {}", u);
+            continue;
+        }
+
+        let mut task = DownloadTask::new(u.clone(), save_path.clone());
+        if let Some(ref folder_id) = folder {
+            task.folder_id = folder_id.clone();
+        }
+
+        manager.add_download(task.clone()).await;
+        println!("Added download: {} (ID: {})", u, task.id);
+        added += 1;
     }
 
-    manager.add_download(task.clone()).await;
+    if added == 0 {
+        return Err(anyhow::anyhow!("No valid URLs to add"));
+    }
+
     manager.save_queue_to_folders().await?;
-
-    println!("Added download: {} (ID: {})", url, task.id);
-
     Ok(error::SUCCESS)
+}
+
+/// Parse a task ID string, returning a uniform error on malformed input.
+fn parse_task_id(id_str: &str) -> Result<Uuid> {
+    Uuid::parse_str(id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))
+}
+
+/// Validate a download URL: must parse and use a scheme the HTTP client
+/// supports. Mirrors the TUI's `is_valid_download_url`.
+fn is_valid_download_url(text: &str) -> bool {
+    match url::Url::parse(text) {
+        Ok(parsed) => matches!(parsed.scheme(), "http" | "https" | "ftp" | "ftps"),
+        Err(_) => false,
+    }
 }
 
 /// List all downloads
@@ -104,7 +136,7 @@ async fn handle_start(
     manager: &DownloadManager,
     wait: bool,
 ) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     // Check if download exists
     let task = manager.get_by_id(id).await
@@ -176,7 +208,7 @@ async fn handle_pause(
     id_str: String,
     manager: &DownloadManager,
 ) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     // Check if download exists
     let task = manager.get_by_id(id).await
@@ -195,7 +227,7 @@ async fn handle_remove(
     id_str: String,
     manager: &DownloadManager,
 ) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     let task = manager.remove_download(id).await
         .ok_or_else(|| anyhow::anyhow!("Download not found"))?;
@@ -209,7 +241,7 @@ async fn handle_remove(
 
 /// Show download status
 async fn handle_status(id_str: String, manager: &DownloadManager, json: bool) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     let task = manager.get_by_id(id).await
         .ok_or_else(|| anyhow::anyhow!("Download not found"))?;
@@ -305,17 +337,40 @@ fn set_config_value(config: &mut Config, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the most recent application log file. The daily rolling appender
+/// writes `app.jsonl.YYYY-MM-DD` into the logs directory; the date suffix sorts
+/// chronologically, so the lexicographically greatest name is the newest.
+fn current_log_file() -> Result<Option<PathBuf>> {
+    let logs_dir = crate::util::paths::get_logs_dir()?;
+    if !logs_dir.is_dir() {
+        return Ok(None);
+    }
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(&logs_dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("app.jsonl"))
+                .unwrap_or(false)
+        })
+        .collect();
+    candidates.sort();
+    Ok(candidates.pop())
+}
+
 /// Display application logs
 async fn handle_logs(
     follow: bool,
     level: Option<String>,
     lines: Option<usize>,
 ) -> Result<i32> {
-    let log_file = PathBuf::from("ggg.log");
-
-    if !log_file.exists() {
-        return Err(anyhow::anyhow!("Log file not found: ggg.log"));
-    }
+    let log_file = match current_log_file()? {
+        Some(f) => f,
+        None => {
+            let dir = crate::util::paths::get_logs_dir()?;
+            return Err(anyhow::anyhow!("Log file not found in {}", dir.display()));
+        }
+    };
 
     let lines_to_show = lines.unwrap_or(50);
 
@@ -351,7 +406,8 @@ async fn follow_log_file(log_file: &PathBuf, level: Option<String>) -> Result<()
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
     use std::fs::File;
 
-    let mut file = File::open(log_file)?;
+    let mut current_path = log_file.clone();
+    let mut file = File::open(&current_path)?;
     file.seek(SeekFrom::End(0))?;
 
     let mut reader = BufReader::new(file);
@@ -372,7 +428,16 @@ async fn follow_log_file(log_file: &PathBuf, level: Option<String>) -> Result<()
                     }
                     line.clear();
                 } else {
-                    // No new data, sleep briefly
+                    // No new data. Detect daily rotation: if a newer log file
+                    // exists, switch to it and tail from its start so lines
+                    // written to the new file are not missed.
+                    if let Ok(Some(latest)) = current_log_file() {
+                        if latest != current_path {
+                            current_path = latest;
+                            reader = BufReader::new(File::open(&current_path)?);
+                            continue;
+                        }
+                    }
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
             }
@@ -397,8 +462,8 @@ async fn handle_history(
     // Collect all log files
     let mut log_files = Vec::new();
     if today {
-        // Only today's log
-        let today_str = chrono::Local::now().format("%Y%m%d").to_string();
+        // Only today's log (UTC, matching how completion logs are named)
+        let today_str = chrono::Utc::now().format("%Y%m%d").to_string();
         let today_file = logs_dir.join(format!("{}.jsonl", today_str));
         if today_file.exists() {
             log_files.push(today_file);
@@ -659,7 +724,7 @@ async fn handle_debug_folder_slots(manager: &DownloadManager, json: bool) -> Res
 
 /// Show detailed task information
 async fn handle_debug_task(id_str: String, manager: &DownloadManager, json: bool) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     let task = manager.get_by_id(id).await
         .ok_or_else(|| anyhow::anyhow!("Task not found"))?;
@@ -1187,14 +1252,13 @@ async fn handle_folder_config(state: &AppState, id: String, set: String) -> Resu
         .ok_or_else(|| anyhow::anyhow!("Folder '{}' not found", id))?;
     let folder = config.folders.get_mut(&folder_id).unwrap();
 
-    // Parse key=value
-    let parts: Vec<&str> = set.split('=').collect();
-    if parts.len() != 2 {
-        return Err(anyhow::anyhow!("Invalid format. Expected: key=value"));
-    }
-
-    let key = parts[0].trim();
-    let value = parts[1].trim();
+    // Parse key=value, splitting only on the first '=' so values may contain
+    // '=' (e.g. a user-agent or header value).
+    let (key, value) = set
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("Invalid format. Expected: key=value"))?;
+    let key = key.trim();
+    let value = value.trim();
 
     // Update configuration
     match key {
@@ -1317,7 +1381,25 @@ async fn handle_clear(
     folder: Option<String>,
 ) -> Result<i32> {
     // Parse status list (comma-separated)
-    let statuses: Vec<&str> = status_str.split(',').map(|s| s.trim()).collect();
+    let statuses: Vec<&str> = status_str
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Validate up front: an unknown/misspelled status would otherwise match
+    // nothing and silently report "Removed 0".
+    const VALID_STATUSES: &[&str] = &["completed", "error", "paused", "pending"];
+    if statuses.is_empty() {
+        return Err(anyhow::anyhow!("No status specified. Valid: {}", VALID_STATUSES.join(", ")));
+    }
+    if let Some(unknown) = statuses.iter().find(|s| !VALID_STATUSES.contains(s)) {
+        return Err(anyhow::anyhow!(
+            "Unknown status '{}'. Valid: {}",
+            unknown,
+            VALID_STATUSES.join(", ")
+        ));
+    }
 
     let tasks = manager.get_all_downloads().await;
     let mut removed_count = 0;
@@ -1410,7 +1492,7 @@ async fn handle_priority(
     id_str: String,
     priority: u8,
 ) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
     manager.set_priority(id, priority).await?;
     manager.save_queue_to_folders().await?;
@@ -1429,19 +1511,12 @@ async fn handle_move(
     before: Option<String>,
     folder: Option<String>,
 ) -> Result<i32> {
-    let id = Uuid::parse_str(&id_str).map_err(|_| anyhow::anyhow!("Invalid UUID format"))?;
+    let id = parse_task_id(&id_str)?;
 
-    // Check that only one operation is specified
-    let ops_count = [to_top, to_bottom, before.is_some(), folder.is_some()]
-        .iter()
-        .filter(|&&x| x)
-        .count();
-
-    if ops_count == 0 {
+    // Mutual exclusivity is enforced by the clap `move_op` group; here we only
+    // need to require that at least one operation was given.
+    if !to_top && !to_bottom && before.is_none() && folder.is_none() {
         return Err(anyhow::anyhow!("Must specify one of: --to-top, --to-bottom, --before, --folder"));
-    }
-    if ops_count > 1 {
-        return Err(anyhow::anyhow!("Can only specify one operation at a time"));
     }
 
     if to_top {

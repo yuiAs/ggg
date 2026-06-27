@@ -110,11 +110,18 @@ pub fn get_folder_queue_path(folder_id: &str) -> Result<PathBuf> {
 
 /// Resolve the default download directory at runtime.
 ///
-/// Resolution order (mirrors config directory logic):
-/// 1. Current working directory + "Downloads"
-/// 2. Executable directory + "Downloads"
-/// 3. Fallback: relative "Downloads"
+/// Resolution order:
+/// 1. Platform user Downloads directory (`dirs::download_dir()`)
+/// 2. Current working directory + "Downloads"
+/// 3. Executable directory + "Downloads"
+/// 4. Fallback: relative "Downloads"
+///
+/// The platform directory is preferred so downloads land in a predictable
+/// place even when the process (GUI/daemon) is launched from an arbitrary cwd.
 pub fn resolve_default_download_directory() -> PathBuf {
+    if let Some(downloads) = dirs::download_dir() {
+        return downloads;
+    }
     if let Ok(cwd) = std::env::current_dir() {
         return cwd.join("Downloads");
     }

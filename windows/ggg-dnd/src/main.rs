@@ -39,14 +39,20 @@ fn main() {
     // The mutex is held for the lifetime of the process and
     // automatically released by the OS on exit.
     let _instance_mutex = unsafe {
-        windows::Win32::System::Threading::CreateMutexW(
+        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        let mutex = windows::Win32::System::Threading::CreateMutexW(
             None,
             true,
             windows::core::w!("Global\\ggg-dnd-running"),
-        )
+        );
+        // ERROR_ALREADY_EXISTS means another ggg-dnd is already running. The
+        // mutex exists primarily so ggg can detect ggg-dnd, so we intentionally
+        // proceed rather than exit — but record it for diagnostics.
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            eprintln!("ggg-dnd: another instance appears to be running");
+        }
+        mutex
     };
-    // If GetLastError == ERROR_ALREADY_EXISTS, another instance is running.
-    // We still proceed — the mutex is only used for detection by ggg.
 
     // Determine pipe name from command-line args or use default
     let pipe_name = std::env::args()

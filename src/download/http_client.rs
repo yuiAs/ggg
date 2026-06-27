@@ -25,6 +25,9 @@ pub struct DownloadInfo {
     pub auth_realm: Option<String>,
     /// The final URL after following redirects (if any)
     pub final_url: Option<String>,
+    /// Total bytes present in the file after the transfer (resume offset plus
+    /// bytes written this session). Zero for metadata-only (`get_info`) calls.
+    pub bytes_written: u64,
 }
 
 /// Parsed HTTP response headers
@@ -69,14 +72,29 @@ fn parse_content_disposition_filename(value: &str) -> Option<String> {
     if let Some(pos) = value.find("filename=") {
         let rest = &value[pos + "filename=".len()..];
         let name = if rest.starts_with('"') {
-            // Quoted: take content between first pair of quotes
-            rest[1..].split('"').next().unwrap_or("")
+            // Quoted-string: read until the closing quote, honoring `\"`
+            // (and `\\`) backslash escapes so an escaped quote inside the value
+            // doesn't terminate it early.
+            let mut out = String::new();
+            let mut chars = rest[1..].chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => {
+                        if let Some(escaped) = chars.next() {
+                            out.push(escaped);
+                        }
+                    }
+                    '"' => break,
+                    _ => out.push(c),
+                }
+            }
+            out
         } else {
             // Unquoted: take until `;` or end
-            rest.split(';').next().unwrap_or("").trim()
+            rest.split(';').next().unwrap_or("").trim().to_string()
         };
         if !name.is_empty() {
-            return Some(name.to_string());
+            return Some(name);
         }
     }
 
@@ -180,6 +198,23 @@ impl HttpClient {
         Ok(Self { client })
     }
 
+    /// Build the configured client, falling back to a default reqwest client
+    /// (with a logged error) if the custom builder options fail, instead of
+    /// panicking at application startup. Only a completely broken TLS/resolver
+    /// environment — where no client can be built at all — still panics.
+    pub fn new_or_fallback() -> Self {
+        if let Ok(client) = Self::new() {
+            return client;
+        }
+        match reqwest::Client::builder().build() {
+            Ok(client) => {
+                tracing::error!("Configured HTTP client failed to build; using a default client");
+                Self { client }
+            }
+            Err(e) => panic!("Unable to initialize any HTTP client: {e}"),
+        }
+    }
+
     /// Create a new HTTP client with custom user agent
     pub fn with_user_agent(user_agent: &str) -> Result<Self> {
         let client = reqwest::Client::builder()
@@ -218,6 +253,7 @@ impl HttpClient {
             auth_required,
             auth_realm,
             final_url,
+            bytes_written: 0,
         })
     }
 
@@ -256,6 +292,18 @@ impl HttpClient {
             let retry_request = self.client.get(url).headers(headers.clone());
             response = retry_request.send().await?;
             tracing::trace!("Retry response status: {}", response.status());
+        }
+
+        // If we sent a Range header but the server ignored it and replied 200
+        // (full body) instead of 206 (partial), appending to the existing
+        // partial file would corrupt it. Restart as a fresh download: the 200
+        // response already carries the complete body, so just rewrite the file.
+        if actual_resume_from.is_some() && response.status().as_u16() == 200 {
+            tracing::warn!(
+                "Server ignored Range header (returned 200 instead of 206); \
+                 restarting download from scratch to avoid file corruption"
+            );
+            actual_resume_from = None;
         }
 
         // Check for auth requirement BEFORE generic error check
@@ -345,6 +393,26 @@ impl HttpClient {
 
         file.flush().await?;
 
+        // Guard against a silently truncated transfer. If the server advertised
+        // a length and the connection closed early, the byte stream simply ends
+        // without an error, which would otherwise be reported as a successful
+        // download of a partial file. Returning an error lets the retry/resume
+        // path recover. For a 206 resume, `size` is the partial body length, so
+        // the expected total is the resume offset plus that length.
+        let expected_total = match actual_resume_from {
+            Some(offset) => size.map(|partial| offset + partial),
+            None => size,
+        };
+        if let Some(expected) = expected_total {
+            if downloaded < expected {
+                return Err(anyhow!(
+                    "Incomplete download: received {} of {} bytes (connection closed early)",
+                    downloaded,
+                    expected
+                ));
+            }
+        }
+
         Ok(DownloadInfo {
             size,
             resume_supported,
@@ -357,6 +425,7 @@ impl HttpClient {
             auth_required: false,  // Already checked above, would have returned early if true
             auth_realm: None,
             final_url,
+            bytes_written: downloaded,
         })
     }
 
@@ -429,7 +498,7 @@ impl HttpClient {
 
 impl Default for HttpClient {
     fn default() -> Self {
-        Self::new().unwrap()
+        Self::new_or_fallback()
     }
 }
 
@@ -618,6 +687,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_download_resume_ignored_range_returns_200() {
+        // Server ignores the Range header and returns 200 with the full body.
+        // The existing partial file must be overwritten, not appended to.
+        let mock_server = MockServer::start().await;
+
+        let full_data = b"Complete file content";
+        Mock::given(method("GET"))
+            .and(path("/file.txt"))
+            .respond_with(ResponseTemplate::new(200) // Full content, ignoring Range
+                .set_body_bytes(full_data.to_vec())
+                .append_header("Content-Length", full_data.len().to_string()))
+            .mount(&mock_server)
+            .await;
+
+        let client = HttpClient::new().unwrap();
+        let url = format!("{}/file.txt", mock_server.uri());
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("resume200.txt");
+
+        // Pre-existing partial file that must NOT be appended to
+        std::fs::write(&file_path, b"Complete").unwrap();
+
+        client.download_to_file(&url, &file_path, &Default::default(), Some(8), None::<fn(u64, Option<u64>)>)
+            .await
+            .unwrap();
+
+        let content = std::fs::read(&file_path).unwrap();
+        assert_eq!(content, full_data, "file should be rewritten with the full body, not appended");
+    }
+
+    #[tokio::test]
     async fn test_download_handles_http_error() {
         let mock_server = MockServer::start().await;
 
@@ -724,6 +825,16 @@ mod tests {
         assert_eq!(
             parse_content_disposition_filename(value),
             Some("テスト.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn test_content_disposition_escaped_quote() {
+        // A backslash-escaped quote inside the quoted value must not end it early.
+        let value = r#"attachment; filename="a\"b.txt""#;
+        assert_eq!(
+            parse_content_disposition_filename(value),
+            Some(r#"a"b.txt"#.to_string())
         );
     }
 

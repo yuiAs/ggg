@@ -87,14 +87,8 @@ fn handle_payload(payload: &[u8]) -> BridgeResponse {
     };
 
     let (pipe_name, ipc_request) = match request {
-        BridgeRequest::AddUrl { url, pipe } => (
-            pipe.unwrap_or_else(|| DEFAULT_PIPE_NAME.to_string()),
-            IpcRequest::AddUrl { url },
-        ),
-        BridgeRequest::Ping { pipe } => (
-            pipe.unwrap_or_else(|| DEFAULT_PIPE_NAME.to_string()),
-            IpcRequest::Ping,
-        ),
+        BridgeRequest::AddUrl { url, pipe } => (resolve_pipe(pipe), IpcRequest::AddUrl { url }),
+        BridgeRequest::Ping { pipe } => (resolve_pipe(pipe), IpcRequest::Ping),
     };
 
     match ggg_ipc::send_request(&pipe_name, &ipc_request) {
@@ -108,6 +102,29 @@ fn handle_payload(payload: &[u8]) -> BridgeResponse {
             message: e.to_string(),
         },
     }
+}
+
+/// Resolve the target pipe name. The `pipe` field comes from untrusted
+/// extension-supplied JSON, so honoring it in release builds would let a
+/// compromised extension redirect requests to (and probe) arbitrary local
+/// named pipes. The override is only allowed in debug builds or when
+/// `GGG_BRIDGE_ALLOW_PIPE_OVERRIDE` is set; otherwise the default pipe is used.
+fn resolve_pipe(requested: Option<String>) -> String {
+    match requested {
+        Some(p) if pipe_override_allowed() => p,
+        Some(_) => {
+            eprintln!(
+                "bridge: ignoring 'pipe' override (allowed only in debug builds \
+                 or with GGG_BRIDGE_ALLOW_PIPE_OVERRIDE set)"
+            );
+            DEFAULT_PIPE_NAME.to_string()
+        }
+        None => DEFAULT_PIPE_NAME.to_string(),
+    }
+}
+
+fn pipe_override_allowed() -> bool {
+    cfg!(debug_assertions) || std::env::var_os("GGG_BRIDGE_ALLOW_PIPE_OVERRIDE").is_some()
 }
 
 /// Read one Native Messaging frame: 4-byte LE length + payload.

@@ -78,6 +78,20 @@ impl LocalizationManager {
         })
     }
 
+    /// Build a no-op manager with no resources. Every key resolves to a
+    /// `[missing: key]` placeholder. Used as an absolute last resort so the app
+    /// can start even if no locale assets load at all, instead of panicking.
+    pub fn fallback() -> Self {
+        let lang_id: LanguageIdentifier = "en-US".parse().unwrap_or_default();
+        let mut bundle = FluentBundle::new(vec![lang_id]);
+        bundle.set_use_isolating(false);
+        Self {
+            bundle,
+            fallback_bundle: None,
+            current_locale: "en-US".to_string(),
+        }
+    }
+
     /// Load all .ftl files for a locale into a FluentBundle.
     ///
     /// Tries the external override directory first. If it contains a
@@ -91,6 +105,10 @@ impl LocalizationManager {
             .map_err(|e| anyhow::anyhow!("Invalid locale ID '{}': {:?}", locale_id, e))?;
 
         let mut bundle = FluentBundle::new(vec![lang_id]);
+        // Disable Unicode bidi isolation (FSI/PDI, U+2068/U+2069) around
+        // interpolated arguments. Those control characters render as stray
+        // glyphs in the CLI and the Win32 GUI's DrawTextW output.
+        bundle.set_use_isolating(false);
 
         let resources = Self::load_from_external(locale_id)
             .unwrap_or_else(|| Self::load_from_embedded(locale_id));

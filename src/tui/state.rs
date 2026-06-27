@@ -176,6 +176,27 @@ pub enum SettingsField {
 }
 
 impl SettingsField {
+    /// All folder settings fields, in display order. The order must match the
+    /// index mapping used by the folder settings handlers.
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::FolderSavePath,
+            Self::FolderAutoDate,
+            Self::FolderAutoStart,
+            Self::FolderPreventDuplicateUrl,
+            Self::FolderScripts,
+            Self::FolderMaxConcurrent,
+            Self::FolderUserAgent,
+            Self::FolderReferrerPolicy,
+            Self::FolderHeaders,
+        ]
+    }
+
+    /// Map a 0-based display index to its field.
+    pub fn from_index(index: usize) -> Option<Self> {
+        Self::all().into_iter().nth(index)
+    }
+
     /// Get translation key for label
     pub fn label_key(&self) -> &str {
         match self {
@@ -348,9 +369,6 @@ pub struct TuiState {
     /// Selected index in the download list
     pub selected_index: usize,
 
-    /// Scroll offset for viewport
-    pub scroll_offset: usize,
-
     /// Currently focused pane in 3-pane layout
     pub focus_pane: FocusPane,
 
@@ -432,8 +450,9 @@ pub struct TuiState {
     /// Context menu: selected menu item index
     pub context_menu_index: usize,
 
-    /// Undo/Redo: stack of deleted downloads for undo functionality
-    pub delete_history: Vec<DownloadTask>,
+    /// Undo stack of deleted downloads. Each entry is one delete *operation*
+    /// (a batch), so a multi-selection delete is undone as a single unit.
+    pub delete_history: Vec<Vec<DownloadTask>>,
 
     /// Download preview: information fetched from server
     pub preview_info: Option<crate::download::http_client::DownloadInfo>,
@@ -447,9 +466,15 @@ pub struct TuiState {
     /// Folder context menu: selected menu item index
     pub folder_context_menu_index: usize,
 
-    /// Cache for filtered history (only used for history search)
-    /// NOTE: Cache is no longer used for folder downloads since we access them directly
-    filtered_cache: RefCell<FilterCache>,
+    /// Cached sorted list of `.js` script filenames, refreshed on tick while the
+    /// settings screen is open. Avoids a blocking `read_dir` on every frame and
+    /// every settings keypress.
+    pub cached_script_files: Vec<String>,
+
+    /// Cached `(folder_id, display_name)` entries, refreshed every tick from
+    /// config. Folder-picker dialogs render from this owned snapshot so they
+    /// never vanish on a transient `config.try_read()` failure.
+    pub cached_folder_entries: Vec<(String, String)>,
 
     /// Keyboard shortcut resolver
     pub keybinding_resolver: crate::app::keybindings::KeybindingResolver,
@@ -457,19 +482,6 @@ pub struct TuiState {
     /// IPC Named Pipe name (Windows only, set when pipe server starts)
     #[cfg(windows)]
     pub ipc_pipe_name: Option<String>,
-}
-
-/// Cache for filtered downloads (legacy - kept for API compatibility)
-#[derive(Debug, Clone, Default)]
-struct FilterCache {
-    key: Option<FilterCacheKey>,
-    ids: Vec<Uuid>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FilterCacheKey {
-    search_query: String,
-    history_len: usize,
 }
 
 impl TuiState {
@@ -494,7 +506,6 @@ impl TuiState {
             folder_names: std::collections::HashMap::new(),
             history_items: Vec::new(),
             selected_index: 0,
-            scroll_offset: 0,
             focus_pane: FocusPane::DownloadList,
             tree_items: vec![FolderTreeItem::Folder("default".to_string()), FolderTreeItem::CompletedNode],
             tree_selected_index: 0,
@@ -527,7 +538,8 @@ impl TuiState {
             table_state: RefCell::new(table_state),
             click_regions: RefCell::new(ClickableRegions::default()),
             folder_context_menu_index: 0,
-            filtered_cache: RefCell::new(FilterCache::default()),
+            cached_script_files: Vec::new(),
+            cached_folder_entries: Vec::new(),
             keybinding_resolver,
             #[cfg(windows)]
             ipc_pipe_name: None,
@@ -558,6 +570,9 @@ impl TuiState {
         }
         let entries = config.sorted_folder_entries();
         drop(config);
+
+        // Snapshot for folder-picker dialogs (rendered without taking the lock).
+        self.cached_folder_entries = entries.clone();
 
         self.tree_items = entries
             .into_iter()
@@ -590,10 +605,14 @@ impl TuiState {
     /// - For completed node: returns history items with optional search filter
     pub fn current_downloads(&self) -> Vec<&DownloadTask> {
         if self.is_viewing_completed_node() {
-            // History view with search
+            // History view with search; lowercase the query once, not per item.
+            if self.search_query.is_empty() {
+                return self.history_items.iter().collect();
+            }
+            let query = self.search_query.to_lowercase();
             self.history_items
                 .iter()
-                .filter(|task| self.matches_search(task))
+                .filter(|task| task.filename.to_lowercase().contains(&query))
                 .collect()
         } else {
             // Direct folder access - no filtering needed
@@ -613,22 +632,6 @@ impl TuiState {
     /// TODO: Remove after full migration
     pub fn filtered_downloads(&self) -> Vec<&DownloadTask> {
         self.current_downloads()
-    }
-
-    /// Invalidate the filter cache (call when downloads/history change)
-    /// NOTE: Cache is no longer used, but kept for API compatibility
-    pub fn invalidate_filter_cache(&self) {
-        let mut cache = self.filtered_cache.borrow_mut();
-        cache.key = None;
-        cache.ids.clear();
-    }
-
-    fn matches_search(&self, task: &DownloadTask) -> bool {
-        if self.search_query.is_empty() {
-            true
-        } else {
-            task.filename.to_lowercase().contains(&self.search_query.to_lowercase())
-        }
     }
 
     /// Get total count of downloads across all folders

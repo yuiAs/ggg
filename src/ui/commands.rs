@@ -104,8 +104,11 @@ pub async fn handle_command(
         }
         Command::GetDownloads => {
             let downloads = download_manager.get_all_downloads().await;
-            CommandResponse::Success {
-                data: serde_json::to_value(&downloads).unwrap(),
+            match serde_json::to_value(&downloads) {
+                Ok(data) => CommandResponse::Success { data },
+                Err(e) => CommandResponse::Error {
+                    error: format!("Failed to serialize downloads: {}", e),
+                },
             }
         }
         Command::RemoveDownload { id } => {
@@ -139,8 +142,11 @@ pub async fn handle_command(
         }
         Command::GetConfig => {
             let config = state.config.read().await;
-            CommandResponse::Success {
-                data: serde_json::to_value(&*config).unwrap(),
+            match serde_json::to_value(&*config) {
+                Ok(data) => CommandResponse::Success { data },
+                Err(e) => CommandResponse::Error {
+                    error: format!("Failed to serialize config: {}", e),
+                },
             }
         }
         Command::UpdateConfig { config } => {

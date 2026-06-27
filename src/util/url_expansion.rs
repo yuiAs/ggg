@@ -104,6 +104,11 @@ pub fn parse_range_pattern(url: &str) -> Option<RangePattern> {
 ///
 /// - Maximum 1000 URLs per expansion to prevent memory issues
 /// - Patterns where end < start return empty vector (invalid range)
+/// - Only the *first* `[start-end]` pattern is expanded; any further patterns
+///   are left untouched.
+/// - Substitution uses `String::replace`, so if the exact same `[a-b]` literal
+///   appears more than once it is replaced everywhere with the same value
+///   (occurrences expand together, not as a cartesian product).
 pub fn expand_url(url: &str) -> Vec<String> {
     const MAX_EXPANSION: u64 = 1000;
 

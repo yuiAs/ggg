@@ -26,6 +26,23 @@ use tokio::sync::mpsc;
 /// URLs can be up to 2048 chars (common browser limit)
 const MAX_INPUT_LENGTH: usize = 2048;
 
+/// Scan a scripts directory for `.js` filenames, sorted. Returns an empty list
+/// on any error. Used to populate `TuiState::cached_script_files`.
+fn scan_script_files(dir: &std::path::Path) -> Vec<String> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            let mut files: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
+                .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                .collect();
+            files.sort();
+            files
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Main TUI application
 pub struct TuiApp {
     pub state: TuiState,
@@ -56,15 +73,27 @@ impl TuiApp {
                 let now = std::time::Instant::now();
                 if now.duration_since(self.last_update_time) >= Duration::from_millis(250) {
                     self.state.update_downloads(&self.manager).await;
+                    // Refresh the script-file cache only while settings is open,
+                    // so render/input paths can read it instead of scanning the
+                    // directory on every frame.
+                    if matches!(self.state.ui_mode, UiMode::Settings) {
+                        self.refresh_script_files_cache().await;
+                    }
                     self.last_update_time = now;
                     self.state.mark_dirty();  // Mark for redraw after data update
                 }
             }
             TuiEvent::Input(input) => {
                 self.handle_input(input).await?;
-                // Force update after user input for immediate feedback
-                self.state.update_downloads(&self.manager).await;
-                self.last_update_time = std::time::Instant::now();
+                // Refresh from the manager for immediate feedback, but no more
+                // often than a short debounce so a burst of navigation
+                // keystrokes doesn't hit the manager (and config lock) on every
+                // press. A deliberate single keypress still refreshes at once.
+                let now = std::time::Instant::now();
+                if now.duration_since(self.last_update_time) >= Duration::from_millis(50) {
+                    self.state.update_downloads(&self.manager).await;
+                    self.last_update_time = now;
+                }
                 self.state.mark_dirty();  // Mark for redraw after input handling
             }
             #[cfg(windows)]
@@ -78,6 +107,15 @@ impl TuiApp {
             }
         }
         Ok(())
+    }
+
+    /// Refresh the cached list of script files from the configured directory.
+    async fn refresh_script_files_cache(&mut self) {
+        let dir = {
+            let config = self.state.app_state.config.read().await;
+            config.scripts.directory.clone()
+        };
+        self.state.cached_script_files = scan_script_files(&dir);
     }
 
     /// Handle keyboard input
@@ -143,9 +181,10 @@ impl TuiApp {
                     self.state.selected_index = filtered_count - 1;
                     self.state.table_state_mut().select(Some(self.state.selected_index));
                 }
-                // Adjust scroll offset if needed
-                if self.state.scroll_offset >= filtered_count {
-                    self.state.scroll_offset = filtered_count.saturating_sub(1);
+                // Clamp the tree cursor too, in case the folder list shrank.
+                let tree_len = self.state.tree_items.len();
+                if tree_len > 0 && self.state.tree_selected_index >= tree_len {
+                    self.state.tree_selected_index = tree_len - 1;
                 }
                 tracing::debug!("Terminal resized to {}x{}", _width, _height);
             }
@@ -202,7 +241,7 @@ impl TuiApp {
             }
             UiMode::FolderContextMenu => {
                 // Check for menu item click
-                if let Some(action_idx) = self.hit_test_folder_context_menu_item(x, y) {
+                if let Some(action_idx) = self.hit_test_context_menu_item(x, y) {
                     self.state.folder_context_menu_index = action_idx;
                     let is_completed = self.state.is_viewing_completed_node();
                     if let Some(action) = self.state.get_selected_folder_menu_action(is_completed) {
@@ -335,17 +374,6 @@ impl TuiApp {
 
     /// Hit test for context menu items
     fn hit_test_context_menu_item(&self, x: u16, y: u16) -> Option<usize> {
-        let regions = self.state.click_regions.borrow();
-        for (idx, rect) in regions.context_menu_items.iter().enumerate() {
-            if Self::point_in_rect(x, y, rect) {
-                return Some(idx);
-            }
-        }
-        None
-    }
-
-    /// Hit test for folder context menu items
-    fn hit_test_folder_context_menu_item(&self, x: u16, y: u16) -> Option<usize> {
         let regions = self.state.click_regions.borrow();
         for (idx, rect) in regions.context_menu_items.iter().enumerate() {
             if Self::point_in_rect(x, y, rect) {
@@ -732,6 +760,11 @@ impl TuiApp {
                     self.state.show_details = !self.state.show_details;
                     return Ok(());
                 }
+                KeyAction::CycleDetailsPosition => {
+                    // Cycle details pane position: Bottom -> Right -> Hidden
+                    self.state.toggle_details_position();
+                    return Ok(());
+                }
                 KeyAction::OpenSearch => {
                     // Search is only available in the History view
                     if self.state.is_viewing_completed_node() {
@@ -746,6 +779,9 @@ impl TuiApp {
                 }
                 KeyAction::OpenSettings => {
                     self.state.ui_mode = UiMode::Settings;
+                    // Populate the cache immediately so the first frame doesn't
+                    // need to scan the scripts directory.
+                    self.refresh_script_files_cache().await;
                     return Ok(());
                 }
                 KeyAction::SwitchFolder => {
@@ -762,12 +798,6 @@ impl TuiApp {
             }
         }
 
-        // Handle keys not covered by keybinding resolver
-        // (e.g., special behaviors like D for details position toggle)
-        if let KeyCode::Char('D') = key {
-            // Toggle details position (D cycles: Bottom -> Right -> Hidden)
-            self.state.toggle_details_position();
-        }
         Ok(())
     }
 
@@ -853,9 +883,8 @@ impl TuiApp {
 
                         self.state.ui_mode = UiMode::Normal;
                         self.state.input_buffer.clear();
-                    } else {
+                    } else if let Some(single_url) = urls_to_add.into_iter().next() {
                         // Single URL with preview
-                        let single_url = urls_to_add.into_iter().next().unwrap();
                         match self.fetch_download_info(&single_url).await {
                             Ok(info) => {
                                 self.state.preview_info = Some(info);
@@ -869,6 +898,10 @@ impl TuiApp {
                                 self.state.ui_mode = UiMode::DownloadPreview;
                             }
                         }
+                    } else {
+                        // No URLs to add (e.g. an invalid range pattern) — back to normal.
+                        self.state.ui_mode = UiMode::Normal;
+                        self.state.input_buffer.clear();
                     }
                 } else {
                     self.state.ui_mode = UiMode::Normal;
@@ -999,18 +1032,8 @@ impl TuiApp {
                     // Navigation and actions depend on whether scripts section is expanded
                     KeyCode::Char('j') | KeyCode::Down => {
                         if self.state.app_scripts_expanded {
-                            // Navigate script files
-                            let config = self.state.app_state.config.read().await;
-                            let script_dir = config.scripts.directory.clone();
-                            drop(config);
-
-                            let script_count = match std::fs::read_dir(&script_dir) {
-                                Ok(entries) => entries
-                                    .filter_map(|e| e.ok())
-                                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                                    .count(),
-                                Err(_) => 0,
-                            };
+                            // Navigate script files (cached; refreshed on tick)
+                            let script_count = self.state.cached_script_files.len();
 
                             if script_count > 0 {
                                 self.state.script_files_index =
@@ -1027,18 +1050,8 @@ impl TuiApp {
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
                         if self.state.app_scripts_expanded {
-                            // Navigate script files
-                            let config = self.state.app_state.config.read().await;
-                            let script_dir = config.scripts.directory.clone();
-                            drop(config);
-
-                            let script_count = match std::fs::read_dir(&script_dir) {
-                                Ok(entries) => entries
-                                    .filter_map(|e| e.ok())
-                                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                                    .count(),
-                                Err(_) => 0,
-                            };
+                            // Navigate script files (cached; refreshed on tick)
+                            let script_count = self.state.cached_script_files.len();
 
                             if script_count > 0 {
                                 self.state.script_files_index = if self.state.script_files_index == 0 {
@@ -1063,23 +1076,8 @@ impl TuiApp {
                     // Enter or Space
                     KeyCode::Enter | KeyCode::Char(' ') => {
                         if self.state.app_scripts_expanded {
-                            // Toggle script file
-                            let config = self.state.app_state.config.read().await;
-                            let script_dir = config.scripts.directory.clone();
-                            drop(config);
-
-                            let script_files = match std::fs::read_dir(&script_dir) {
-                                Ok(entries) => {
-                                    let mut files: Vec<String> = entries
-                                        .filter_map(|e| e.ok())
-                                        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                                        .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
-                                        .collect();
-                                    files.sort();
-                                    files
-                                }
-                                Err(_) => Vec::new(),
-                            };
+                            // Toggle script file (cached; refreshed on tick)
+                            let script_files = self.state.cached_script_files.clone();
 
                             if self.state.script_files_index < script_files.len() {
                                 let filename = script_files[self.state.script_files_index].clone();
@@ -1211,18 +1209,8 @@ impl TuiApp {
             // Navigation depends on whether scripts section is expanded
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.state.folder_scripts_expanded {
-                    // Navigate script files
-                    let config = self.state.app_state.config.read().await;
-                    let script_dir = config.scripts.directory.clone();
-                    drop(config);
-
-                    let script_count = match std::fs::read_dir(&script_dir) {
-                        Ok(entries) => entries
-                            .filter_map(|e| e.ok())
-                            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                            .count(),
-                        Err(_) => 0,
-                    };
+                    // Navigate script files (cached; refreshed on tick)
+                    let script_count = self.state.cached_script_files.len();
 
                     if script_count > 0 {
                         self.state.script_files_index =
@@ -1230,24 +1218,14 @@ impl TuiApp {
                     }
                 } else {
                     // Navigate fields
-                    let field_count = 9; // save_path, auto_date, auto_start, prevent_duplicate_url, scripts, max_concurrent, user_agent, referrer_policy, headers
+                    let field_count = super::state::SettingsField::all().len();
                     self.state.move_field_selection_down(field_count);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.state.folder_scripts_expanded {
-                    // Navigate script files
-                    let config = self.state.app_state.config.read().await;
-                    let script_dir = config.scripts.directory.clone();
-                    drop(config);
-
-                    let script_count = match std::fs::read_dir(&script_dir) {
-                        Ok(entries) => entries
-                            .filter_map(|e| e.ok())
-                            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                            .count(),
-                        Err(_) => 0,
-                    };
+                    // Navigate script files (cached; refreshed on tick)
+                    let script_count = self.state.cached_script_files.len();
 
                     if script_count > 0 {
                         self.state.script_files_index = if self.state.script_files_index == 0 {
@@ -1265,24 +1243,9 @@ impl TuiApp {
             // Enter or Space
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if self.state.folder_scripts_expanded {
-                    // Toggle folder script file
+                    // Toggle folder script file (cached; refreshed on tick)
                     if let Some(ref folder_id) = self.state.selected_folder_id {
-                        let config = self.state.app_state.config.read().await;
-                        let script_dir = config.scripts.directory.clone();
-                        drop(config);
-
-                        let script_files = match std::fs::read_dir(&script_dir) {
-                            Ok(entries) => {
-                                let mut files: Vec<String> = entries
-                                    .filter_map(|e| e.ok())
-                                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
-                                    .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
-                                    .collect();
-                                files.sort();
-                                files
-                            }
-                            Err(_) => Vec::new(),
-                        };
+                        let script_files = self.state.cached_script_files.clone();
 
                         if self.state.script_files_index < script_files.len() {
                             let filename = script_files[self.state.script_files_index].clone();
@@ -1402,6 +1365,11 @@ impl TuiApp {
                         _ => {}
                     }
                 }
+                // Persist immediately so a confirmed folder-field edit isn't
+                // lost when the user quits without pressing the save key.
+                if let Err(e) = config.save() {
+                    tracing::error!("Failed to persist folder settings: {}", e);
+                }
             }
         }
 
@@ -1417,17 +1385,9 @@ impl TuiApp {
         }
 
         // Determine which field is selected
-        let selected_field = match self.state.settings_field_index {
-            0 => SettingsField::FolderSavePath,
-            1 => SettingsField::FolderAutoDate,
-            2 => SettingsField::FolderAutoStart,
-            3 => SettingsField::FolderPreventDuplicateUrl,
-            4 => SettingsField::FolderScripts,
-            5 => SettingsField::FolderMaxConcurrent,
-            6 => SettingsField::FolderUserAgent,
-            7 => SettingsField::FolderReferrerPolicy,
-            8 => SettingsField::FolderHeaders,
-            _ => return Ok(()),
+        let selected_field = match SettingsField::from_index(self.state.settings_field_index) {
+            Some(field) => field,
+            None => return Ok(()),
         };
 
         self.state.settings_edit_field = Some(selected_field);
@@ -1686,6 +1646,27 @@ impl TuiApp {
     }
 
     /// Handle change folder mode (folder picker for changing item's application folder)
+    /// Shared j/k (and arrow) navigation for the folder-picker dialogs.
+    fn navigate_folder_picker(&mut self, key: KeyCode, folder_count: usize) {
+        if folder_count == 0 {
+            return;
+        }
+        match key {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.state.folder_picker_index =
+                    (self.state.folder_picker_index + 1) % folder_count;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.state.folder_picker_index = if self.state.folder_picker_index == 0 {
+                    folder_count - 1
+                } else {
+                    self.state.folder_picker_index - 1
+                };
+            }
+            _ => {}
+        }
+    }
+
     async fn handle_change_folder_for_item_mode(&mut self, key: KeyCode) -> Result<()> {
         let config = self.state.app_state.config.read().await;
         let folder_entries = config.sorted_folder_entries();
@@ -1693,20 +1674,8 @@ impl TuiApp {
         drop(config);
 
         match key {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if folder_count > 0 {
-                    self.state.folder_picker_index =
-                        (self.state.folder_picker_index + 1) % folder_count;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if folder_count > 0 {
-                    self.state.folder_picker_index = if self.state.folder_picker_index == 0 {
-                        folder_count - 1
-                    } else {
-                        self.state.folder_picker_index - 1
-                    };
-                }
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('k') | KeyCode::Up => {
+                self.navigate_folder_picker(key, folder_count);
             }
             KeyCode::Enter => {
                 self.commit_change_folder_selection(&folder_entries).await?;
@@ -1804,19 +1773,8 @@ impl TuiApp {
         drop(config);
 
         match key {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if folder_count > 0 {
-                    self.state.folder_picker_index = (self.state.folder_picker_index + 1) % folder_count;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if folder_count > 0 {
-                    self.state.folder_picker_index = if self.state.folder_picker_index == 0 {
-                        folder_count - 1
-                    } else {
-                        self.state.folder_picker_index - 1
-                    };
-                }
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('k') | KeyCode::Up => {
+                self.navigate_folder_picker(key, folder_count);
             }
             KeyCode::Enter => {
                 // Select folder by UUID
@@ -2130,14 +2088,18 @@ impl TuiApp {
 
         let ids_to_delete = self.state.get_target_download_ids();
         if !ids_to_delete.is_empty() {
+            // Collect the deleted tasks as one batch so undo restores them all.
+            let mut batch = Vec::new();
             for id in ids_to_delete {
-                // Save to undo history before deleting
                 if let Some(mut task) = self.manager.get_by_id(id).await {
                     task.status = DownloadStatus::Deleted;
                     self.manager.add_to_history(task.clone()).await;
-                    self.state.delete_history.push(task);
+                    batch.push(task);
                 }
                 self.manager.remove_download(id).await;
+            }
+            if !batch.is_empty() {
+                self.state.delete_history.push(batch);
             }
             self.state.clear_selections();
             self.save_queue().await?;
@@ -2146,17 +2108,21 @@ impl TuiApp {
 
         // Limit history size to prevent excessive memory usage
         if self.state.delete_history.len() > MAX_UNDO_HISTORY {
-            self.state.delete_history.drain(0..self.state.delete_history.len() - MAX_UNDO_HISTORY);
+            let overflow = self.state.delete_history.len() - MAX_UNDO_HISTORY;
+            self.state.delete_history.drain(0..overflow);
         }
 
         Ok(())
     }
 
-    /// Undo last delete operation
+    /// Undo last delete operation (restores the whole batch).
     async fn undo_delete(&mut self) -> Result<()> {
-        if let Some(task) = self.state.delete_history.pop() {
-            self.add_download_with_auto_start(task).await?;
-            tracing::info!("Undid delete operation");
+        if let Some(batch) = self.state.delete_history.pop() {
+            let count = batch.len();
+            for task in batch {
+                self.add_download_with_auto_start(task).await?;
+            }
+            tracing::info!("Undid delete of {} download(s)", count);
         }
         Ok(())
     }

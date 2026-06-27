@@ -82,16 +82,26 @@ pub enum DownloadStatus {
     Deleted,
 }
 
+/// Derive a filename from a URL's last path segment, falling back to
+/// "download" when the URL ends in `/` (empty segment) or has no path.
+fn filename_from_url(url: &str) -> String {
+    let name = url
+        .split('/')
+        .last()
+        .unwrap_or("")
+        .split('?')
+        .next()
+        .unwrap_or("");
+    if name.is_empty() {
+        "download".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
 impl DownloadTask {
     pub fn new(url: String, save_path: PathBuf) -> Self {
-        let filename = url
-            .split('/')
-            .last()
-            .unwrap_or("download")
-            .split('?')
-            .next()
-            .unwrap_or("download")
-            .to_string();
+        let filename = filename_from_url(&url);
 
         let mut task = Self {
             id: Uuid::new_v4(),
@@ -141,14 +151,7 @@ impl DownloadTask {
         // Apply folder default user agent
         let user_agent = folder_config.and_then(|f| f.user_agent.clone());
 
-        let filename = url
-            .split('/')
-            .last()
-            .unwrap_or("download")
-            .split('?')
-            .next()
-            .unwrap_or("download")
-            .to_string();
+        let filename = filename_from_url(&url);
 
         let mut task = Self {
             id: Uuid::new_v4(),
@@ -259,5 +262,23 @@ pub fn format_duration(seconds: u64) -> String {
         } else {
             format!("{}h", hours)
         }
+    }
+}
+
+#[cfg(test)]
+mod filename_tests {
+    use super::filename_from_url;
+
+    #[test]
+    fn derives_last_path_segment() {
+        assert_eq!(filename_from_url("https://host/path/file.zip"), "file.zip");
+        assert_eq!(filename_from_url("https://host/file.zip?a=1"), "file.zip");
+    }
+
+    #[test]
+    fn falls_back_when_empty() {
+        // URL ending in '/' yields an empty segment -> fallback.
+        assert_eq!(filename_from_url("https://host/path/"), "download");
+        assert_eq!(filename_from_url("https://host/"), "download");
     }
 }

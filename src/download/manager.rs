@@ -10,7 +10,6 @@ use crate::script::message::ScriptRequest;
 use crate::script::sender;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use tokio::sync::{RwLock, Semaphore};
 use tokio::task::JoinHandle;
@@ -85,6 +84,13 @@ impl DownloadManager {
         max_retries: u32,
         retry_delay_secs: u64,
     ) -> Self {
+        // Clamp limits to a sane minimum of 1. A zero limit would create a
+        // `Semaphore::new(0)` whose `acquire()` never resolves, permanently
+        // wedging every spawned download task.
+        let max_concurrent = max_concurrent.max(1);
+        let max_concurrent_per_folder = max_concurrent_per_folder.max(1);
+        let parallel_folder_count = parallel_folder_count.max(1);
+
         // Validate and adjust constraint: (folder_limit * active_folder_limit) <= global_limit
         let (adjusted_folder_limit, adjusted_active_limit) =
             if max_concurrent_per_folder * parallel_folder_count > max_concurrent {
@@ -110,7 +116,7 @@ impl DownloadManager {
 
         Self {
             folder_queues: Arc::new(RwLock::new(HashMap::new())),
-            http_client: Arc::new(HttpClient::new().unwrap()),
+            http_client: Arc::new(HttpClient::new_or_fallback()),
             active_downloads: Arc::new(RwLock::new(HashMap::new())),
             max_concurrent: Arc::new(RwLock::new(max_concurrent)),
             global_semaphore: Arc::new(Semaphore::new(max_concurrent)),
@@ -155,13 +161,6 @@ impl DownloadManager {
             queue.has_active_tasks().await
         } else {
             false
-        }
-    }
-
-    /// Decrement downloading count for a folder (for cleanup after download completes)
-    async fn decrement_downloading(&self, folder_id: &str) {
-        if let Some(queue) = self.get_folder_queue(folder_id).await {
-            queue.decrement_downloading().await;
         }
     }
 
@@ -215,19 +214,33 @@ impl DownloadManager {
     }
 
     pub async fn remove_download(&self, id: Uuid) -> Option<DownloadTask> {
-        // Cancel active download if running
+        // Cancel active download if running. Aborting drops the spawned task
+        // without running its cleanup, so the folder slot is released below.
         if let Some(handle) = self.active_downloads.write().await.remove(&id) {
             handle.abort();
         }
-        
-        // Find and remove from the appropriate folder queue
-        let queues = self.folder_queues.read().await;
-        for queue in queues.values() {
+
+        // Snapshot the folder queues (cheap Arc clones) and drop the outer lock
+        // before awaiting on individual queues, so a concurrent writer to
+        // `folder_queues` can't be blocked behind this read guard.
+        let queues: Vec<FolderQueue> = {
+            let guard = self.folder_queues.read().await;
+            guard.values().cloned().collect()
+        };
+        let mut removed = None;
+        for queue in queues {
             if let Some(task) = queue.remove(id).await {
-                return Some(task);
+                removed = Some(task);
+                break;
             }
         }
-        None
+
+        if let Some(task) = &removed {
+            // queue.remove() already adjusted the per-folder count; release the
+            // folder activation slot if the folder is now empty.
+            self.deactivate_folder_if_empty(&task.folder_id).await;
+        }
+        removed
     }
 
     pub async fn start_download(
@@ -345,9 +358,26 @@ impl DownloadManager {
         let task_url = task.url.clone();
 
         let handle = tokio::spawn(async move {
-            // Acquire both global and folder semaphore permits
-            let _global_permit = global_semaphore.acquire().await.unwrap();
-            let _folder_permit = folder_semaphore.acquire().await.unwrap();
+            // Acquire both global and folder semaphore permits. The semaphores
+            // are never closed in normal operation, but handle the error path
+            // gracefully instead of panicking the download task (which would
+            // leave the task stuck `Downloading` and leak its folder slot).
+            let _global_permit = match global_semaphore.acquire().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    tracing::error!("Global semaphore closed; aborting download '{}'", task.filename);
+                    manager_for_cleanup.abort_unstarted(&queue, task, &folder_id).await;
+                    return;
+                }
+            };
+            let _folder_permit = match folder_semaphore.acquire().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    tracing::error!("Folder semaphore closed; aborting download '{}'", task.filename);
+                    manager_for_cleanup.abort_unstarted(&queue, task, &folder_id).await;
+                    return;
+                }
+            };
 
             tracing::debug!(
                 "Acquired slots for '{}' (folder: {})",
@@ -380,7 +410,9 @@ impl DownloadManager {
                         // Check if we should retry
                         if current_task.retry_count < max_retries {
                             // Calculate exponential backoff delay: base_delay * 2^(retry_count - 1)
-                            let backoff_delay = retry_delay_secs * 2_u64.pow(current_task.retry_count.saturating_sub(1));
+                            // Cap the exponent so a large retry_count can't overflow the shift.
+                            let exponent = current_task.retry_count.saturating_sub(1).min(16);
+                            let backoff_delay = retry_delay_secs.saturating_mul(2_u64.pow(exponent));
                             tracing::info!(
                                 "Retrying download {} in {} seconds (attempt {}/{})",
                                 current_task.filename,
@@ -440,8 +472,11 @@ impl DownloadManager {
                 }
             }
 
-            // Cleanup: Decrement downloading count and deactivate folder if empty
-            manager_for_cleanup.decrement_downloading(&folder_id).await;
+            // Cleanup: the terminal queue operation already adjusted the count
+            // (download_task removes the task on success, or marks it Error on
+            // failure), so only the folder slot needs releasing here. Calling
+            // decrement_downloading here would double-count and wrongly free a
+            // sibling download's slot when several run in the same folder.
             manager_for_cleanup.deactivate_folder_if_empty(&folder_id).await;
         });
 
@@ -555,6 +590,13 @@ impl DownloadManager {
                 info.auth_realm.as_deref().unwrap_or("unknown")));
 
             if let Some(ref sender) = script_sender {
+                // Trust boundary note: scripts loaded from the user-controlled
+                // scripts directory (see ScriptLoader, which skips symlinks and
+                // caps size) may supply credentials for a download. We never
+                // surface *existing* credentials to scripts — username/password
+                // are sent as None — so a script can only inject, not read,
+                // credentials. Gating injection per-script would require a
+                // permissions config; deferred intentionally.
                 let ctx = crate::script::events::AuthRequiredContext {
                     url: task.url.clone(),
                     realm: info.auth_realm.clone(),
@@ -678,10 +720,16 @@ impl DownloadManager {
         // Ensure directory exists (handles auto-date subdirectories)
         tokio::fs::create_dir_all(&resolved_save_path).await?;
 
-        // Resume: only for interrupted tasks (Paused/Error) with existing partial file
+        // Resume: only for interrupted tasks (Paused/Error) with an existing
+        // partial file. A single async `metadata` call avoids the exists()+
+        // metadata() TOCTOU and the blocking std::fs call on the runtime;
+        // any error (missing/unreadable) means "start fresh".
         let mut file_path = resolved_save_path.join(&task.filename);
-        let resume_from = if is_resuming && file_path.exists() && task.resume_supported {
-            Some(std::fs::metadata(&file_path)?.len())
+        let resume_from = if is_resuming && task.resume_supported {
+            match tokio::fs::metadata(&file_path).await {
+                Ok(meta) => Some(meta.len()),
+                Err(_) => None,
+            }
         } else {
             None
         };
@@ -704,68 +752,47 @@ impl DownloadManager {
             task.log_info("Starting fresh download".to_string());
         }
 
-        // Download with progress callback using atomic throttling
-        // This avoids spawning tasks for throttled updates, reducing overhead
+        // Progress is delivered over a bounded channel to a single consumer
+        // task, rather than spawning a task per update. The sync callback uses
+        // `try_send`, so when the consumer is behind the update is dropped and
+        // superseded by the next one (natural coalescing) — and the terminal
+        // 100% update is never silently throttled away. The script progress
+        // hook is rate-limited inside the consumer.
         let task_id = task.id;
         let task_url = task.url.clone();
         let queue_for_progress = queue.clone();
         let start_time = std::time::Instant::now();
-        // Store last update time as milliseconds since start (atomic for lock-free check)
-        let last_update_ms = Arc::new(AtomicU64::new(0));
         let script_sender_for_progress = script_sender.clone();
         let effective_script_files_for_progress = effective_script_files.clone();
 
-        let progress_callback = move |downloaded: u64, total: Option<u64>| {
-            // Lock-free throttle check: update at most once per 500ms
-            let elapsed_ms = start_time.elapsed().as_millis() as u64;
-            let last_ms = last_update_ms.load(Ordering::Relaxed);
-            if elapsed_ms.saturating_sub(last_ms) < 500 {
-                return; // Throttled - skip this update entirely (no task spawn)
-            }
-            
-            // Try to atomically update last_update_ms (compare-and-swap)
-            // If another thread updated it first, skip this update
-            if last_update_ms.compare_exchange(
-                last_ms,
-                elapsed_ms,
-                Ordering::SeqCst,
-                Ordering::Relaxed
-            ).is_err() {
-                return; // Another update won the race
-            }
+        let (prog_tx, mut prog_rx) = tokio::sync::mpsc::channel::<(u64, Option<u64>)>(4);
 
-            // Only clone and spawn when we pass the throttle
-            let queue = queue_for_progress.clone();
-            let script_sender = script_sender_for_progress.clone();
-            let url = task_url.clone();
-            let effective_script_files = effective_script_files_for_progress.clone();
+        let progress_consumer = tokio::spawn(async move {
+            let mut last_script_ms: u64 = 0;
+            while let Some((downloaded, total)) = prog_rx.recv().await {
+                let Some(mut task) = queue_for_progress.get_by_id(task_id).await else {
+                    continue;
+                };
+                task.downloaded = downloaded;
+                task.size = total.or(task.size);
 
-            tokio::spawn(async move {
-                if let Some(mut task) = queue.get_by_id(task_id).await {
-                    task.downloaded = downloaded;
-                    task.size = total.or(task.size);
-
-                    // Hook Point 5: progress - Progress updates (fire-and-forget)
-                    if let Some(ref sender) = script_sender {
+                // Hook Point 5: progress - fire-and-forget, throttled to ~2/sec
+                if let Some(ref sender) = script_sender_for_progress {
+                    let elapsed_ms = start_time.elapsed().as_millis() as u64;
+                    if elapsed_ms.saturating_sub(last_script_ms) >= 500 {
+                        last_script_ms = elapsed_ms;
                         let elapsed = start_time.elapsed().as_secs_f64();
-                        let speed_value = if elapsed > 0.0 {
-                            downloaded as f64 / elapsed
-                        } else {
-                            0.0
-                        };
-
+                        let speed_value = if elapsed > 0.0 { downloaded as f64 / elapsed } else { 0.0 };
                         let ctx = crate::script::events::ProgressContext {
-                            url: url.clone(),
+                            url: task_url.clone(),
                             filename: task.filename.clone(),
                             downloaded,
                             total,
                             speed: Some(speed_value),
                             percentage: None, // Calculated by script engine
                         };
-
-                        // Fire-and-forget (no need to wait for response)
                         let sender_clone = (*sender).clone();
-                        let effective_files = effective_script_files.clone();
+                        let effective_files = effective_script_files_for_progress.clone();
                         tokio::task::spawn_blocking(move || {
                             if let Err(e) = sender_clone.send(ScriptRequest::Progress {
                                 ctx,
@@ -775,10 +802,15 @@ impl DownloadManager {
                             }
                         });
                     }
-
-                    queue.update(task).await;
                 }
-            });
+
+                queue_for_progress.update(task).await;
+            }
+        });
+
+        let progress_callback = move |downloaded: u64, total: Option<u64>| {
+            // Non-blocking: drop if the consumer is behind; the next update wins.
+            let _ = prog_tx.try_send((downloaded, total));
         };
 
         // Rebuild headers to include any auth header from authRequired hook
@@ -798,6 +830,10 @@ impl DownloadManager {
                 Some(progress_callback),
             )
             .await?;
+
+        // The callback (and its sender) is now dropped; drain the remaining
+        // progress updates so the final value is applied before finalizing.
+        let _ = progress_consumer.await;
 
         // Apply last modified time if available
         if let Some(ref last_modified) = download_info.last_modified {
@@ -838,40 +874,62 @@ impl DownloadManager {
                         .unwrap_or(&task.save_path)
                         .to_path_buf();
 
-                    // Apply file rename if script set newFilename
+                    // Apply file rename if script set newFilename. Scripts are
+                    // untrusted, so sanitize the name to a bare filename:
+                    // sanitize_filename strips path separators and other unsafe
+                    // characters, preventing the rename from escaping file_dir.
                     if let Some(new_name) = modified_ctx.new_filename {
-                        // Check for collision with existing files before renaming
-                        let final_name = crate::file::naming::ensure_unique_filename(
-                            &file_dir, &new_name,
-                        );
-                        let new_path = file_dir.join(&final_name);
-                        tracing::debug!(
-                            from = ?file_path_for_ops,
-                            to = ?new_path,
-                            "Renaming file by script"
-                        );
-                        if let Err(e) = std::fs::rename(&file_path_for_ops, &new_path) {
-                            tracing::error!(
+                        let safe_name = sanitize_filename(&new_name);
+                        if safe_name.is_empty() {
+                            task.log_warn(format!(
+                                "Script newFilename '{}' rejected (empty after sanitization)",
+                                new_name
+                            ));
+                        } else {
+                            // Check for collision with existing files before renaming
+                            let final_name =
+                                crate::file::naming::ensure_unique_filename(&file_dir, &safe_name);
+                            let new_path = file_dir.join(&final_name);
+                            tracing::debug!(
                                 from = ?file_path_for_ops,
                                 to = ?new_path,
-                                "Failed to rename file: {}", e
+                                "Renaming file by script"
                             );
-                        } else {
-                            task.filename = final_name;
-                            task.log_info("File renamed by script".to_string());
+                            if let Err(e) = std::fs::rename(&file_path_for_ops, &new_path) {
+                                tracing::error!(
+                                    from = ?file_path_for_ops,
+                                    to = ?new_path,
+                                    "Failed to rename file: {}", e
+                                );
+                            } else {
+                                task.filename = final_name;
+                                task.log_info("File renamed by script".to_string());
+                            }
                         }
                     }
 
-                    // Apply file move if script set moveToPath
+                    // Apply file move if script set moveToPath. Reject paths
+                    // containing `..` components so an untrusted script cannot
+                    // traverse out to arbitrary locations.
                     if let Some(new_dir_str) = modified_ctx.move_to_path {
-                        let current_path = file_dir.join(&task.filename);
-                        let new_dir = std::path::PathBuf::from(new_dir_str);
-                        let new_path = new_dir.join(&task.filename);
-                        if let Err(e) = std::fs::rename(&current_path, &new_path) {
-                            tracing::error!("Failed to move file: {}", e);
+                        let new_dir = std::path::PathBuf::from(&new_dir_str);
+                        let has_parent_traversal = new_dir
+                            .components()
+                            .any(|c| matches!(c, std::path::Component::ParentDir));
+                        if has_parent_traversal {
+                            task.log_warn(format!(
+                                "Script moveToPath '{}' rejected (contains '..')",
+                                new_dir_str
+                            ));
                         } else {
-                            task.save_path = new_dir;
-                            task.log_info("File moved by script".to_string());
+                            let current_path = file_dir.join(&task.filename);
+                            let new_path = new_dir.join(&task.filename);
+                            if let Err(e) = std::fs::rename(&current_path, &new_path) {
+                                tracing::error!("Failed to move file: {}", e);
+                            } else {
+                                task.save_path = new_dir;
+                                task.log_info("File moved by script".to_string());
+                            }
                         }
                     }
                     task.log_info("completed hook executed".to_string());
@@ -885,10 +943,15 @@ impl DownloadManager {
             }
         }
 
-        // Mark as completed
+        // Mark as completed. Use the actual bytes written rather than the
+        // advertised size, so the record stays correct when the size was
+        // unknown or the server rejected the Range and restarted from 0.
         task.status = DownloadStatus::Completed;
         task.completed_at = Some(chrono::Utc::now());
-        task.downloaded = task.size.unwrap_or(0);
+        task.downloaded = download_info.bytes_written;
+        if task.size.is_none() {
+            task.size = Some(download_info.bytes_written);
+        }
         task.log_info(format!("Download completed successfully: {}", task.filename));
 
         // Append to completion log
@@ -912,7 +975,8 @@ impl DownloadManager {
     }
 
     pub async fn pause_download(&self, id: Uuid) -> Result<()> {
-        // Abort the download task
+        // Abort the download task. Aborting drops the spawned future, so its
+        // own cleanup never runs — this function releases bookkeeping itself.
         if let Some(handle) = self.active_downloads.write().await.remove(&id) {
             handle.abort();
         }
@@ -920,13 +984,14 @@ impl DownloadManager {
         // Update status and counts
         if let Some(mut task) = self.get_by_id(id).await {
             let folder_id = task.folder_id.clone();
-            if task.status == DownloadStatus::Downloading {
-                self.decrement_downloading(&folder_id).await;
-            }
             task.status = DownloadStatus::Paused;
             if let Some(queue) = self.get_folder_queue(&folder_id).await {
+                // `update()` owns the count: a Downloading/Pending -> Paused
+                // transition decrements the corresponding count exactly once.
                 queue.update(task).await;
             }
+            // Release the folder activation slot if nothing else is active.
+            self.deactivate_folder_if_empty(&folder_id).await;
         }
 
         Ok(())
@@ -1152,6 +1217,16 @@ impl DownloadManager {
         }
     }
 
+    /// Release bookkeeping for a task that was scheduled but failed to acquire a
+    /// concurrency permit. This is a defensive path: the semaphores are never
+    /// closed in normal operation, so this should be unreachable.
+    async fn abort_unstarted(&self, queue: &FolderQueue, mut task: DownloadTask, folder_id: &str) {
+        task.status = DownloadStatus::Error;
+        task.error_message = Some("Internal error: concurrency semaphore closed".to_string());
+        queue.update(task).await; // Downloading -> Error releases the downloading count
+        self.deactivate_folder_if_empty(folder_id).await;
+    }
+
     /// Deactivate folder if it has no pending or active downloads (O(1) operation)
     async fn deactivate_folder_if_empty(&self, folder_id: &str) {
         // Use O(1) counter check instead of O(n) queue iteration
@@ -1168,9 +1243,22 @@ impl DownloadManager {
         }
     }
 
+    /// Adjust the application-wide concurrency limit at runtime by growing or
+    /// shrinking the global semaphore's permit pool. Clamped to a minimum of 1
+    /// (a zero limit would deadlock every acquirer). Shrinking only removes
+    /// currently-available permits; permits held by in-flight downloads take
+    /// effect as they complete.
     pub async fn set_max_concurrent(&self, max: usize) {
-        *self.max_concurrent.write().await = max;
-        // Note: Global semaphore cannot be resized, would need to recreate manager
+        let max = max.max(1);
+        let mut current = self.max_concurrent.write().await;
+        match max.cmp(&current) {
+            std::cmp::Ordering::Greater => self.global_semaphore.add_permits(max - *current),
+            std::cmp::Ordering::Less => {
+                self.global_semaphore.forget_permits(*current - max);
+            }
+            std::cmp::Ordering::Equal => {}
+        }
+        *current = max;
     }
 
     pub async fn get_active_count(&self) -> usize {
@@ -1632,14 +1720,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_max_concurrent_zero() {
-        // Test setting max concurrent to 0 (edge case)
+    async fn test_set_max_concurrent_zero_is_clamped() {
+        // A zero limit is clamped to 1 to avoid deadlocking acquirers.
         let manager = DownloadManager::new();
 
         manager.set_max_concurrent(0).await;
 
         let current = *manager.max_concurrent.read().await;
-        assert_eq!(current, 0);
+        assert_eq!(current, 1);
     }
 
     #[tokio::test]

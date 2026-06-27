@@ -28,6 +28,9 @@ struct DomainCircuit {
     opened_at: Option<Instant>,
     /// Last successful request time
     last_success: Option<Instant>,
+    /// Whether a half-open probe request is already in flight. Ensures only a
+    /// single trial request is admitted while recovering.
+    probe_in_flight: bool,
 }
 
 impl Default for DomainCircuit {
@@ -37,6 +40,7 @@ impl Default for DomainCircuit {
             failures: 0,
             opened_at: None,
             last_success: None,
+            probe_in_flight: false,
         }
     }
 }
@@ -87,7 +91,7 @@ impl CircuitBreaker {
     ///
     /// Returns the current circuit state for the domain
     pub fn can_request(&self, domain: &str) -> CircuitState {
-        let mut circuits = self.circuits.write().unwrap();
+        let mut circuits = self.circuits.write().unwrap_or_else(|e| e.into_inner());
         let circuit = circuits.entry(domain.to_string()).or_default();
 
         match circuit.state {
@@ -96,8 +100,9 @@ impl CircuitBreaker {
                 // Check if cooldown has elapsed
                 if let Some(opened_at) = circuit.opened_at {
                     if opened_at.elapsed() >= self.config.cooldown_duration {
-                        // Transition to half-open to test
+                        // Transition to half-open and admit exactly one probe.
                         circuit.state = CircuitState::HalfOpen;
+                        circuit.probe_in_flight = true;
                         tracing::info!(
                             "Circuit for {} transitioning to half-open (testing recovery)",
                             domain
@@ -110,13 +115,22 @@ impl CircuitBreaker {
                     CircuitState::Open
                 }
             }
-            CircuitState::HalfOpen => CircuitState::HalfOpen,
+            CircuitState::HalfOpen => {
+                // Only one trial request is allowed while recovering; block
+                // concurrent callers until the probe resolves.
+                if circuit.probe_in_flight {
+                    CircuitState::Open
+                } else {
+                    circuit.probe_in_flight = true;
+                    CircuitState::HalfOpen
+                }
+            }
         }
     }
 
     /// Record a successful request to a domain
     pub fn record_success(&self, domain: &str) {
-        let mut circuits = self.circuits.write().unwrap();
+        let mut circuits = self.circuits.write().unwrap_or_else(|e| e.into_inner());
         let circuit = circuits.entry(domain.to_string()).or_default();
 
         circuit.failures = 0;
@@ -128,13 +142,14 @@ impl CircuitBreaker {
 
         circuit.state = CircuitState::Closed;
         circuit.opened_at = None;
+        circuit.probe_in_flight = false;
     }
 
     /// Record a failed request to a domain
     ///
     /// Returns true if the circuit was just opened
     pub fn record_failure(&self, domain: &str) -> bool {
-        let mut circuits = self.circuits.write().unwrap();
+        let mut circuits = self.circuits.write().unwrap_or_else(|e| e.into_inner());
         let circuit = circuits.entry(domain.to_string()).or_default();
 
         // Reset failure count if enough time has passed since last success
@@ -150,6 +165,7 @@ impl CircuitBreaker {
         if circuit.state == CircuitState::HalfOpen {
             circuit.state = CircuitState::Open;
             circuit.opened_at = Some(Instant::now());
+            circuit.probe_in_flight = false;
             tracing::warn!(
                 "Circuit for {} re-opened (recovery test failed)",
                 domain
@@ -176,7 +192,7 @@ impl CircuitBreaker {
 
     /// Get the current state and failure count for a domain
     pub fn get_status(&self, domain: &str) -> (CircuitState, u32) {
-        let circuits = self.circuits.read().unwrap();
+        let circuits = self.circuits.read().unwrap_or_else(|e| e.into_inner());
         circuits
             .get(domain)
             .map(|c| (c.state, c.failures))
@@ -190,21 +206,21 @@ impl CircuitBreaker {
 
     /// Reset circuit for a domain
     pub fn reset(&self, domain: &str) {
-        let mut circuits = self.circuits.write().unwrap();
+        let mut circuits = self.circuits.write().unwrap_or_else(|e| e.into_inner());
         circuits.remove(domain);
         tracing::debug!("Circuit for {} reset", domain);
     }
 
     /// Clear all circuits
     pub fn clear_all(&self) {
-        let mut circuits = self.circuits.write().unwrap();
+        let mut circuits = self.circuits.write().unwrap_or_else(|e| e.into_inner());
         circuits.clear();
         tracing::debug!("All circuits cleared");
     }
 
     /// Get list of domains with open circuits
     pub fn get_open_circuits(&self) -> Vec<String> {
-        let circuits = self.circuits.read().unwrap();
+        let circuits = self.circuits.read().unwrap_or_else(|e| e.into_inner());
         circuits
             .iter()
             .filter(|(_, c)| c.state == CircuitState::Open)
@@ -299,6 +315,27 @@ mod tests {
 
         // domain2 should still be closed
         assert_eq!(breaker.can_request("domain2.com"), CircuitState::Closed);
+    }
+
+    #[test]
+    fn test_half_open_admits_single_probe() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            cooldown_duration: Duration::from_millis(0),
+            success_reset_duration: Duration::from_secs(300),
+        };
+        let breaker = CircuitBreaker::with_config(config);
+
+        breaker.record_failure("ex.com"); // opens immediately (threshold 1)
+
+        // Cooldown is zero, so the first check admits a single probe...
+        assert_eq!(breaker.can_request("ex.com"), CircuitState::HalfOpen);
+        // ...and concurrent callers are blocked while the probe is in flight.
+        assert_eq!(breaker.can_request("ex.com"), CircuitState::Open);
+
+        // Once the probe succeeds the circuit closes and resets the flag.
+        breaker.record_success("ex.com");
+        assert_eq!(breaker.can_request("ex.com"), CircuitState::Closed);
     }
 
     #[test]

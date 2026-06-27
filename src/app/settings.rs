@@ -181,7 +181,8 @@ pub fn validate_folder_config(config: &Config) -> Result<(), Vec<ValidationError
         config.download.max_concurrent_per_folder,
         config.download.parallel_folder_count,
     ) {
-        let calculated = max_per_folder * parallel_count;
+        // Saturating: these are unbounded user-entered config values.
+        let calculated = max_per_folder.saturating_mul(parallel_count);
         if calculated > max_concurrent {
             errors.push(ValidationError::ConcurrentDownloadConstraintViolation {
                 max_concurrent,
