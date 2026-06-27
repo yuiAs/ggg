@@ -698,9 +698,14 @@ fn render_status_bar(app: &TuiApp, f: &mut Frame, area: Rect) {
         }
     };
 
-    // Create a single line without border
+    // Create a single line without border.
+    // Use display width (not char count) so wide glyphs like the 📥 emoji
+    // reserve their true 2-column footprint; otherwise the line overflows and
+    // ratatui clips the right-aligned version text (e.g. "v0.4.0" -> "v0.4").
     let padding_width = area.width.saturating_sub(
-        (left_content.chars().count() + right_content.chars().count() + 2) as u16
+        (UnicodeWidthStr::width(left_content.as_str())
+            + UnicodeWidthStr::width(right_content.as_str())
+            + 2) as u16,
     );
 
     let status_line = Line::from(vec![
