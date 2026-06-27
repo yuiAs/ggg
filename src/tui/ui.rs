@@ -1189,6 +1189,14 @@ fn render_application_settings(app: &TuiApp, f: &mut Frame, area: Rect) {
         Style::default().fg(muted_color),
     )));
 
+    // App version + build revision
+    lines.push(Line::from(""));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("v{} ({})", env!("CARGO_PKG_VERSION"), env!("GIT_HASH")),
+        Style::default().fg(muted_color),
+    )));
+
     let paragraph = Paragraph::new(lines)
         .block(
             Block::default()
