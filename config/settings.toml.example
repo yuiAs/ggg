@@ -1,5 +1,8 @@
 # GGG (Great Grimoire Grabber) Configuration Example
-# Copy this file to your config directory and customize as needed
+# Copy this file to your config directory and customize as needed.
+#
+# This file documents every application-level setting inline. Folder-specific
+# settings (which override these) are described at the bottom.
 #
 # Config directory locations (searched in priority order):
 #   1. --config flag (highest priority)
@@ -7,60 +10,69 @@
 #   3. %APPDATA%\ggg\ (Windows) / ~/.config/ggg/ (Linux/macOS)
 #   4. ./config/ (current directory)
 #   5. <exe_dir>/config/ (executable directory)
+#
+# Path escaping (Windows): prefer single quotes 'C:\path' or escape
+# backslashes "C:\\path".
 
 # ============================================================================
 # General Settings
 # ============================================================================
 [general]
-# Display language ("en" or "ja" - requires restart to apply)
+# Display language: "en" or "ja" (requires restart to apply).
 language = "en"
 
-# UI theme (currently only "classic" is available)
+# UI theme (currently only "classic" is available).
 theme = "classic"
 
-# Minimize to system tray (not yet implemented)
-minimize_to_tray = false
+# Minimize to system tray (not yet implemented; default: true).
+minimize_to_tray = true
 
-# Start minimized (not yet implemented)
+# Start the application minimized (not yet implemented; default: false).
 start_minimized = false
+
+# Skip the Add Download preview dialog and queue URLs immediately (default: true).
+skip_download_preview = true
+
+# Windows only: automatically launch the drag-and-drop helper on startup
+# (default: false).
+auto_launch_dnd = false
 
 
 # ============================================================================
 # Download Settings
 # ============================================================================
 [download]
-# Default download directory
+# Default save location for new downloads.
 # Windows example: 'C:\Users\YourName\Downloads'
 # Linux/macOS example: '/home/username/Downloads'
 default_directory = 'C:\Downloads'
 
-# Maximum concurrent downloads (application-wide)
+# Global concurrent download limit (default: 3).
 max_concurrent = 3
 
-# Maximum concurrent downloads per folder
-max_concurrent_per_folder = 2
-
-# Number of folders to process in parallel
-parallel_folder_count = 1
-
-# Retry count for failed downloads
+# Number of retry attempts on failure (default: 3).
 retry_count = 3
 
-# Retry delay in seconds
+# Delay between retries, in seconds (default: 5).
 retry_delay = 5
 
-# Maximum number of HTTP redirects to follow
+# Maximum number of HTTP redirects to follow (default: 5).
 max_redirects = 5
 
-# User agent string for HTTP requests
+# Default User-Agent string for HTTP requests.
 user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# Bandwidth limit in bytes per second (0 = unlimited)
+# Bandwidth limit in bytes per second (0 = unlimited).
 bandwidth_limit = 0
 
-# Referrer header policy for downloads
-# Options: "none" (default), "same_as_url", "url_path", "url_origin"
-# Custom: { type = "custom", value = "https://example.com" }
+# Optional per-folder limits (omit to leave unlimited). When both are set,
+# max_concurrent_per_folder * parallel_folder_count must not exceed max_concurrent.
+# max_concurrent_per_folder = 2  # Max concurrent downloads within a single folder
+# parallel_folder_count = 1      # Max folders downloading simultaneously
+
+# Referrer header policy for downloads.
+#   "none" (default) | "same_as_url" | "url_path" | "url_origin"
+#   Custom value: { type = "custom", value = "https://example.com" }
 # referrer_policy = "none"
 
 
@@ -68,25 +80,21 @@ bandwidth_limit = 0
 # Network Settings
 # ============================================================================
 [network]
-# Enable proxy
+# Enable proxy for HTTP requests (default: false).
 proxy_enabled = false
 
-# Proxy type ("http" or "socks5")
+# Proxy type: "http" or "socks5".
 proxy_type = "http"
 
-# Proxy host
+# Proxy server address.
 proxy_host = ""
-
-# Proxy port
 proxy_port = 8080
 
-# Enable proxy authentication
+# Enable proxy authentication (default: false).
 proxy_auth = false
 
-# Proxy username (only used if proxy_auth = true)
+# Proxy credentials (only used when proxy_auth = true).
 proxy_user = ""
-
-# Proxy password (only used if proxy_auth = true)
 proxy_pass = ""
 
 
@@ -94,43 +102,105 @@ proxy_pass = ""
 # Script Settings
 # ============================================================================
 [scripts]
-# Enable JavaScript hook scripts
+# Enable JavaScript hook scripts (default: true).
 enabled = true
 
-# Script directory path (relative or absolute)
-# Default: <config_dir>/scripts (resolved at runtime)
+# Scripts directory, relative or absolute.
+# Default: <config_dir>/scripts (resolved at runtime).
 directory = "./scripts"
 
-# Script execution timeout in seconds
+# Script execution timeout in seconds (default: 30).
 timeout = 30
 
-# Per-script enable/disable settings
-# Add script filenames here to enable/disable them individually
+# Per-script enable/disable. List script filenames to toggle them individually;
+# files not listed here follow the global `enabled` setting above.
 [scripts.script_files]
-# Example: Enable specific scripts
 # "01_twitter.js" = true
 # "02_pixiv.js" = false
 
 
 # ============================================================================
+# Keybindings (TUI)
+# ============================================================================
+# Customize keyboard shortcuts. Each action binds to one key ("a") or several
+# (["k", "Up"]). The values below are the defaults; omit any line to keep it.
+#
+# Key format:
+#   - Single character: "a", "j", "G" (uppercase letter implies Shift)
+#   - Special keys: "Enter", "Space", "Tab", "BackTab", "Escape",
+#       "Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown",
+#       "Delete", "Insert", "F1"-"F12"
+#   - Modifiers: "Ctrl+z", "Alt+x", "Shift+Enter"
+#   - Multiple keys: ["k", "Up"]
+[keybindings]
+# Navigation
+move_up = ["k", "Up"]
+move_down = ["j", "Down"]
+move_to_top = ["g", "Home"]
+move_to_bottom = ["G", "End"]
+page_up = "Ctrl+u"
+page_down = "Ctrl+d"
+focus_next_pane = "Tab"
+focus_prev_pane = "BackTab"
+focus_left = ["h", "Left"]
+focus_right = ["l", "Right"]
+
+# Selection
+select_item = "Enter"
+toggle_selection = "Space"
+select_all = "V"
+deselect_all = "Escape"
+
+# Actions
+add_download = "a"
+delete_download = "d"
+toggle_download = "s"
+retry_download = "r"
+resume_all = "S"
+pause_all = "P"
+open_context_menu = "m"
+edit_item = "e"
+
+# View
+toggle_details = "i"
+cycle_details_position = "D"
+open_search = "/"
+open_help = "?"
+open_settings = "x"
+switch_folder = "F"
+
+# System
+quit = ["q", "Ctrl+c"]
+undo = "Ctrl+z"
+refresh = "R"
+
+
+# ============================================================================
 # Folder-Specific Settings
 # ============================================================================
-# To create folder-specific settings, create a file at:
+# Folder settings override the application settings above. Create a file at:
 #   config/<folder_name>/settings.toml
 #
-# Folder settings can override application settings. Example:
+# Every field is optional and inherits from the application settings when
+# omitted. Note: keys live at the root of the folder file (there is no
+# [folder] wrapper). Example folder file:
 #
-# [folder]
-# save_path = 'D:\Downloads\Anime'
-# auto_date_directory = true
-# scripts_enabled = true
-# max_concurrent = 5
-# user_agent = "CustomAgent/1.0"
-# referrer_policy = "url_origin"
+#   save_path = 'D:\Downloads\Anime'   # Download destination (required in practice)
+#   auto_date_directory = true         # Create YYYYMMDD subdirectories (default: false)
+#   auto_start_downloads = true        # Start downloads when added (default: false)
+#   prevent_duplicate_url = false      # Reject URLs already queued in this folder (default: false)
 #
-# [folder.default_headers]
-# Referer = "https://example.com"
-# Authorization = "Bearer token123"
+#   scripts_enabled = true             # Override [scripts].enabled (omit = inherit)
+#   max_concurrent = 5                 # Override global limit (omit = inherit)
+#   user_agent = "CustomAgent/1.0"     # Override User-Agent (omit = inherit)
+#   referrer_policy = "url_origin"     # Override referrer policy (omit = inherit)
 #
-# [folder.script_files]
-# "anime_downloader.js" = true
+#   [default_headers]                  # Extra HTTP headers for this folder
+#   Referer = "https://example.com"
+#   Authorization = "Bearer token123"
+#
+#   [script_files]                     # Per-folder script overrides
+#   "anime_downloader.js" = true
+#
+# Settings priority (highest to lowest):
+#   1. Queue/task level  2. Folder level  3. Application level
