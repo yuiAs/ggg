@@ -2,7 +2,7 @@
 # App title, tabs, status bar
 
 # Header
-app-title = 📚 Great Grimoire Grabber
+app-title = 📚 GGG
 app-version = v{$version} 📥
 
 # 3-Pane Layout

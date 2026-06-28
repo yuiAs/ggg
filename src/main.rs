@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    tracing::info!("Starting Great Grimoire Grabber...");
+    tracing::info!("Starting GGG...");
     if cli.verbose {
         tracing::info!("Verbose logging enabled (TRACE level)");
     }

@@ -6,7 +6,7 @@ pub mod handler;
 pub mod daemon;
 pub mod bridge;
 
-/// Great Grimoire Grabber - A classic-style download manager
+/// GGG - A classic-style download manager
 #[derive(Parser, Debug)]
 #[command(name = "ggg")]
 #[command(version, about, long_about = None)]
