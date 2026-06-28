@@ -148,17 +148,7 @@ impl TuiApp {
 
                 if self.state.ui_mode.is_text_input() {
                     // Text-input modes: append pasted text into the input buffer.
-                    let available = MAX_INPUT_LENGTH.saturating_sub(self.state.input_buffer.len());
-                    if available > 0 {
-                        // Char-based slicing to avoid splitting UTF-8 sequences
-                        let to_add: String = text.chars().take(available).collect();
-                        self.state.input_buffer.push_str(&to_add);
-                        // Keep search query in sync while in Search mode
-                        if self.state.ui_mode == UiMode::Search {
-                            self.state.set_search_query(self.state.input_buffer.clone());
-                        }
-                        self.state.mark_dirty();
-                    }
+                    self.insert_input_text(&text);
                 } else {
                     // Non-text-input modes: register only if the paste is a downloadable URL.
                     let trimmed = text.trim();
@@ -194,6 +184,36 @@ impl TuiApp {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Append text into the input buffer, respecting the length cap.
+    /// Shared by bracketed-paste, Ctrl+v, and right-click paste.
+    fn insert_input_text(&mut self, text: &str) {
+        let available = MAX_INPUT_LENGTH.saturating_sub(self.state.input_buffer.len());
+        if available == 0 {
+            return;
+        }
+        // Char-based slicing to avoid splitting UTF-8 sequences
+        let to_add: String = text.chars().take(available).collect();
+        self.state.input_buffer.push_str(&to_add);
+        // Keep search query in sync while in Search mode
+        if self.state.ui_mode == UiMode::Search {
+            self.state.set_search_query(self.state.input_buffer.clone());
+        }
+        // Clear any validation error, mirroring normal keystroke handling
+        self.state.validation_error = None;
+        self.state.mark_dirty();
+    }
+
+    /// Read UTF-8 text from the system clipboard, returning None on failure.
+    fn read_clipboard_text() -> Option<String> {
+        match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
+            Ok(text) => Some(text),
+            Err(e) => {
+                tracing::warn!("Failed to read clipboard: {}", e);
+                None
+            }
+        }
     }
 
     /// Handle mouse events
@@ -472,6 +492,16 @@ impl TuiApp {
 
     /// Handle right click at position
     async fn handle_right_click(&mut self, x: u16, y: u16) -> Result<()> {
+        // In text-input dialogs, right-click pastes from the clipboard. Mouse
+        // capture suppresses the terminal's native right-click paste, so emulate
+        // it here instead of dropping the event.
+        if self.state.ui_mode.is_text_input() {
+            if let Some(text) = Self::read_clipboard_text() {
+                self.insert_input_text(&text);
+            }
+            return Ok(());
+        }
+
         // Only handle right clicks in Normal mode
         if self.state.ui_mode != UiMode::Normal {
             return Ok(());
@@ -806,6 +836,16 @@ impl TuiApp {
         // Handle Ctrl+u first (before Char match)
         if matches!(key, KeyCode::Char('u')) && mods.contains(KeyModifiers::CONTROL) {
             self.state.input_buffer.clear();
+            return Ok(());
+        }
+
+        // Ctrl+v: paste from the system clipboard. Some terminals deliver Ctrl+v
+        // as a raw key event instead of a bracketed-paste `Event::Paste`, so read
+        // the clipboard directly here rather than relying on the paste event.
+        if matches!(key, KeyCode::Char('v')) && mods.contains(KeyModifiers::CONTROL) {
+            if let Some(text) = Self::read_clipboard_text() {
+                self.insert_input_text(&text);
+            }
             return Ok(());
         }
 
@@ -1722,6 +1762,14 @@ impl TuiApp {
         // Handle Ctrl+u first (before Char match)
         if matches!(key, KeyCode::Char('u')) && mods.contains(KeyModifiers::CONTROL) {
             self.state.input_buffer.clear();
+            return Ok(());
+        }
+
+        // Ctrl+v: paste from the system clipboard (see handle_input_mode).
+        if matches!(key, KeyCode::Char('v')) && mods.contains(KeyModifiers::CONTROL) {
+            if let Some(text) = Self::read_clipboard_text() {
+                self.insert_input_text(&text);
+            }
             return Ok(());
         }
 
