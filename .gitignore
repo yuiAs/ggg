@@ -21,14 +21,11 @@ target
 #.idea/
 
 # Claude Code
-.claude/plans/
-.claude/settings.local.json
+.claude/
 .serena/
 
 # Development
 docs/dev/*
-!docs/dev/Project_Structure.md
-!docs/dev/ARCHITECTURE.md
 
 # Testing
 config/*
