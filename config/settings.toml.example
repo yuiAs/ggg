@@ -7,9 +7,9 @@
 # Config directory locations (searched in priority order):
 #   1. --config flag (highest priority)
 #   2. GGG_CONFIG_DIR environment variable
-#   3. %APPDATA%\ggg\ (Windows) / ~/.config/ggg/ (Linux/macOS)
-#   4. ./config/ (current directory)
-#   5. <exe_dir>/config/ (executable directory)
+#   3. <exe_dir>/config/ (executable directory)
+#   4. ~/.config/ggg/ (all platforms; %USERPROFILE%\.config\ggg on Windows)
+#   5. %APPDATA%\ggg\ (Windows) / ~/.config/ggg/ (Linux/macOS)
 #
 # Path escaping (Windows): prefer single quotes 'C:\path' or escape
 # backslashes "C:\\path".

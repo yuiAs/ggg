@@ -19,11 +19,11 @@ pub fn get_config_dir_override() -> Option<PathBuf> {
 /// Find config directory by searching in priority order:
 /// 1. Override from --config flag or set_config_dir_override() (highest priority)
 /// 2. Environment variable GGG_CONFIG_DIR
-/// 3. User config directory (`~/.config/ggg/` on Unix, `%APPDATA%\ggg\` on Windows)
-/// 4. Current working directory (`./config/`)
-/// 5. Executable directory (`<exe_dir>/config/`)
+/// 3. Executable directory (`<exe_dir>/config/`)
+/// 4. XDG-style home config directory (`~/.config/ggg/` on every platform)
+/// 5. Platform user config directory (`%APPDATA%\ggg\` on Windows, `~/.config/ggg` on Unix)
 ///
-/// If no config directory is found, creates one in the user config directory.
+/// If no config directory is found, creates one in the XDG-style home config directory.
 pub fn find_config_directory() -> Result<PathBuf> {
     // Priority 1: Override from --config flag or tests
     if let Some(override_path) = get_config_dir_override() {
@@ -43,24 +43,7 @@ pub fn find_config_directory() -> Result<PathBuf> {
         }
     }
 
-    // Priority 3: User config directory (platform standard location)
-    if let Ok(user_config) = get_user_config_dir() {
-        if user_config.exists() {
-            tracing::debug!("Found config directory at: {:?}", user_config);
-            return Ok(user_config);
-        }
-    }
-
-    // Priority 4: Current working directory
-    if let Ok(cwd) = std::env::current_dir() {
-        let cwd_config = cwd.join("config");
-        if cwd_config.exists() {
-            tracing::debug!("Found config directory at: {:?}", cwd_config);
-            return Ok(cwd_config);
-        }
-    }
-
-    // Priority 5: Executable directory
+    // Priority 3: Executable directory (portable install alongside the binary)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let exe_config = exe_dir.join("config");
@@ -71,12 +54,28 @@ pub fn find_config_directory() -> Result<PathBuf> {
         }
     }
 
-    // Fallback: Create in user config directory
-    let user_config = get_user_config_dir()?;
-    std::fs::create_dir_all(&user_config)
-        .context("Failed to create user config directory")?;
-    tracing::info!("Created config directory at: {:?}", user_config);
-    Ok(user_config)
+    // Priority 4: XDG-style home config directory (`~/.config/ggg`)
+    if let Ok(xdg_config) = get_xdg_config_dir() {
+        if xdg_config.exists() {
+            tracing::debug!("Found config directory at: {:?}", xdg_config);
+            return Ok(xdg_config);
+        }
+    }
+
+    // Priority 5: Platform user config directory (`%APPDATA%\ggg` on Windows)
+    if let Ok(user_config) = get_user_config_dir() {
+        if user_config.exists() {
+            tracing::debug!("Found config directory at: {:?}", user_config);
+            return Ok(user_config);
+        }
+    }
+
+    // Fallback: Create in the XDG-style home config directory
+    let xdg_config = get_xdg_config_dir()?;
+    std::fs::create_dir_all(&xdg_config)
+        .context("Failed to create home config directory")?;
+    tracing::info!("Created config directory at: {:?}", xdg_config);
+    Ok(xdg_config)
 }
 
 /// Get platform-specific user config directory
@@ -86,6 +85,17 @@ fn get_user_config_dir() -> Result<PathBuf> {
     let base_dir = dirs::config_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not determine user config directory"))?;
     Ok(base_dir.join("ggg"))
+}
+
+/// Get the XDG-style home config directory (`~/.config/ggg`) on every platform.
+///
+/// On Unix this matches `dirs::config_dir()`, but on Windows it deliberately
+/// resolves to `%USERPROFILE%\.config\ggg` rather than `%APPDATA%\ggg`, giving
+/// a Linux-like location that is preferred over the Roaming AppData directory.
+fn get_xdg_config_dir() -> Result<PathBuf> {
+    let home_dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    Ok(home_dir.join(".config").join("ggg"))
 }
 
 /// Get absolute path to settings.toml (application-level)
@@ -282,28 +292,11 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_find_config_directory_cwd_fallback() {
+    fn test_find_config_directory_ignores_cwd() {
         reset_test_state();
 
-        let temp_dir = TempDir::new().unwrap();
-        let config_dir = temp_dir.path().join("config");
-        fs::create_dir_all(&config_dir).unwrap();
-
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
-
-        let found_dir = find_config_directory().unwrap();
-        // CWD config is still found (as Priority 4 fallback or user config dir)
-        assert!(found_dir.ends_with("config") || found_dir.to_str().unwrap().contains("ggg"));
-
-        std::env::set_current_dir(original_dir).unwrap();
-    }
-
-    #[test]
-    #[serial]
-    fn test_find_config_directory_prefers_user_config_over_cwd() {
-        reset_test_state();
-
+        // A `./config` in the current working directory must NOT be picked up:
+        // cwd was removed from the search order.
         let temp_dir = TempDir::new().unwrap();
         let cwd_config = temp_dir.path().join("config");
         fs::create_dir_all(&cwd_config).unwrap();
@@ -311,14 +304,30 @@ mod tests {
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(&temp_dir).unwrap();
 
-        // If user config dir exists, it should be preferred over CWD
-        let user_config = get_user_config_dir().unwrap();
-        if user_config.exists() {
-            let found_dir = find_config_directory().unwrap();
-            assert_eq!(found_dir, user_config);
-        }
+        let found_dir = find_config_directory().unwrap();
+        assert_ne!(found_dir, cwd_config);
 
         std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_config_directory_prefers_xdg_over_appdata() {
+        reset_test_state();
+
+        // When the XDG-style home config exists, it wins over the platform
+        // user config directory (`%APPDATA%\ggg` on Windows).
+        let xdg_config = get_xdg_config_dir().unwrap();
+        if xdg_config.exists() {
+            let found_dir = find_config_directory().unwrap();
+            assert_eq!(found_dir, xdg_config);
+        }
+    }
+
+    #[test]
+    fn test_get_xdg_config_dir_is_home_dot_config() {
+        let xdg_dir = get_xdg_config_dir().unwrap();
+        assert!(xdg_dir.ends_with(PathBuf::from(".config").join("ggg")));
     }
 
     #[test]
